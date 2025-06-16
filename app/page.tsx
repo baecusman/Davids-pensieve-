@@ -8,7 +8,6 @@ import SourceManagementView from "@/components/views/source-management-view"
 import SettingsView from "@/components/views/settings-view"
 import SimpleLogin from "@/components/auth/simple-login"
 import { simpleAuth } from "@/lib/auth/simple-auth"
-import ErrorBoundary from "@/components/error-boundary"
 
 export default function HomePage() {
   const [user, setUser] = useState<any>(null)
@@ -16,7 +15,6 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    // Check if user is logged in
     const currentUser = simpleAuth.getCurrentUser()
     if (currentUser) {
       setUser(currentUser)
@@ -52,17 +50,15 @@ export default function HomePage() {
   }
 
   return (
-    <ErrorBoundary>
-      <div className="min-h-screen bg-gray-50">
-        <Navigation activeView={activeView} onViewChange={setActiveView} user={user} onLogout={handleLogout} />
+    <div className="min-h-screen bg-gray-50">
+      <Navigation activeView={activeView} onViewChange={setActiveView} user={user} onLogout={handleLogout} />
 
-        <main className="pb-8">
-          {activeView === "digests" && <DigestsView />}
-          {activeView === "concept-map" && <ConceptMapView />}
-          {activeView === "source-management" && <SourceManagementView />}
-          {activeView === "settings" && <SettingsView />}
-        </main>
-      </div>
-    </ErrorBoundary>
+      <main className="pb-8">
+        {activeView === "digests" && <DigestsView />}
+        {activeView === "concept-map" && <ConceptMapView />}
+        {activeView === "source-management" && <SourceManagementView />}
+        {activeView === "settings" && <SettingsView />}
+      </main>
+    </div>
   )
 }
