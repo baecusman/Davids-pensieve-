@@ -120,17 +120,45 @@ class DigestScheduler {
 
   private getNextMondayAt4AM(): Date {
     const now = new Date()
-    const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }))
 
-    // Find next Monday
-    const daysUntilMonday = (1 + 7 - et.getDay()) % 7 || 7
-    const nextMonday = new Date(et)
-    nextMonday.setDate(et.getDate() + daysUntilMonday)
-    nextMonday.setHours(4, 0, 0, 0)
+    // Get current time in ET
+    const etNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }))
 
-    // Convert back to UTC
-    const utcMonday = new Date(nextMonday.toLocaleString("en-US", { timeZone: "UTC" }))
-    return utcMonday
+    // Calculate days until next Monday (0=Sunday, 1=Monday, etc.)
+    const currentDay = etNow.getDay()
+    let daysUntilMonday: number
+
+    if (currentDay === 1) {
+      // If today is Monday
+      // If it's before 4 AM, schedule for today at 4 AM
+      if (etNow.getHours() < 4) {
+        daysUntilMonday = 0
+      } else {
+        // If it's after 4 AM, schedule for next Monday
+        daysUntilMonday = 7
+      }
+    } else {
+      // Calculate days until next Monday
+      daysUntilMonday = (1 + 7 - currentDay) % 7
+      if (daysUntilMonday === 0) daysUntilMonday = 7
+    }
+
+    // Create the target date in ET
+    const targetET = new Date(etNow)
+    targetET.setDate(etNow.getDate() + daysUntilMonday)
+    targetET.setHours(4, 0, 0, 0)
+
+    // Convert ET to UTC for storage
+    const targetUTC = new Date(targetET.toLocaleString("en-US", { timeZone: "UTC" }))
+
+    // Adjust for timezone offset
+    const etOffset = targetET.getTimezoneOffset()
+    const utcOffset = targetUTC.getTimezoneOffset()
+    const offsetDiff = etOffset - utcOffset
+
+    targetUTC.setMinutes(targetUTC.getMinutes() + offsetDiff)
+
+    return targetUTC
   }
 
   private async processPendingDigests(): Promise<void> {
@@ -334,6 +362,41 @@ class DigestScheduler {
     } catch (error) {
       console.error("Error sending test digest:", error)
       throw error
+    }
+  }
+
+  // Debug method to verify scheduling
+  debugScheduling(): any {
+    const now = new Date()
+    const etNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }))
+    const nextMonday = this.getNextMondayAt4AM()
+    const etNextMonday = new Date(nextMonday.toLocaleString("en-US", { timeZone: "America/New_York" }))
+
+    return {
+      currentTime: {
+        utc: now.toISOString(),
+        et: etNow.toLocaleString("en-US", { timeZone: "America/New_York" }),
+        dayOfWeek: etNow.getDay(), // 0=Sunday, 1=Monday, etc.
+      },
+      nextDigest: {
+        utc: nextMonday.toISOString(),
+        et: etNextMonday.toLocaleString("en-US", { timeZone: "America/New_York" }),
+        dayOfWeek: etNextMonday.getDay(),
+        hoursFromNow: Math.round((nextMonday.getTime() - now.getTime()) / (1000 * 60 * 60)),
+      },
+      activeJobs: Array.from(this.jobs.values()).map((job) => ({
+        userId: job.userId,
+        username: job.username,
+        email: job.email,
+        scheduledFor: job.scheduledFor,
+        scheduledForET: new Date(job.scheduledFor).toLocaleString("en-US", { timeZone: "America/New_York" }),
+        status: job.status,
+        lastSent: job.lastSent,
+      })),
+      schedulerStatus: {
+        isRunning: this.isRunning,
+        totalJobs: this.jobs.size,
+      },
     }
   }
 

@@ -831,6 +831,27 @@ export default function SettingsView() {
                     <li>• Automatically scheduled to repeat weekly</li>
                   </ul>
                 </div>
+
+                {/* Debug Information */}
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <h4 className="font-medium mb-2 text-yellow-900">🔍 Scheduling Debug Info:</h4>
+                  <button
+                    onClick={() => {
+                      const debug = digestScheduler.debugScheduling()
+                      console.log("Digest Scheduling Debug:", debug)
+                      setStatus(
+                        `📊 Debug info logged to console. Next digest: ${debug.nextDigest.et} (${debug.nextDigest.hoursFromNow}h from now)`,
+                      )
+                      setTimeout(() => setStatus(""), 10000)
+                    }}
+                    className="bg-yellow-600 hover:bg-yellow-700 text-white font-medium py-1 px-3 rounded text-sm"
+                  >
+                    Check Scheduling Logic
+                  </button>
+                  <div className="mt-2 text-sm text-yellow-800">
+                    <p>Click to verify next Monday 4 AM ET calculation and view all scheduled digests.</p>
+                  </div>
+                </div>
               </div>
             </div>
           )}
