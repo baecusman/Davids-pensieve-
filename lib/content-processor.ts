@@ -263,11 +263,11 @@ export class ContentProcessor {
   }
 
   static backupData(): string {
-    return databaseService.backupData()
+    return databaseService.backup()
   }
 
   static restoreData(backup: string) {
-    return databaseService.restoreData(backup)
+    return databaseService.restore(backup)
   }
 
   static exportData(format: "json" | "csv" = "json"): string {
