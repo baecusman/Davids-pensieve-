@@ -20,13 +20,10 @@ import {
   HardDrive,
   Zap,
   Mail,
-  Cloud,
   Calendar,
 } from "lucide-react"
 import { databaseService } from "@/lib/database/database-service"
 import { emailScheduler } from "@/lib/email-scheduler"
-import DriveExport from "@/components/google-drive/drive-export"
-import { googleAuth } from "@/lib/auth/google-auth"
 import { digestScheduler } from "@/lib/digest/digest-scheduler"
 import { simpleAuth } from "@/lib/auth/simple-auth"
 
@@ -66,7 +63,7 @@ export default function SettingsView() {
   const [isVacuuming, setIsVacuuming] = useState(false)
   const [status, setStatus] = useState("")
   const [activeTab, setActiveTab] = useState<
-    "overview" | "data" | "preferences" | "performance" | "maintenance" | "email" | "drive"
+    "overview" | "data" | "preferences" | "performance" | "maintenance" | "email"
   >("overview")
 
   const [digestEmail, setDigestEmail] = useState("")
@@ -362,25 +359,6 @@ export default function SettingsView() {
     }
   }
 
-  const handleTestEmail = async () => {
-    if (!settings?.email.address) {
-      setStatus("❌ Please enter an email address first")
-      setTimeout(() => setStatus(""), 3000)
-      return
-    }
-
-    try {
-      setStatus("📧 Sending test digest...")
-      await emailScheduler.sendTestDigest(settings.email.address)
-      setStatus("✅ Test digest sent successfully!")
-      setTimeout(() => setStatus(""), 5000)
-    } catch (error) {
-      console.error("Test email error:", error)
-      setStatus("❌ Failed to send test digest")
-      setTimeout(() => setStatus(""), 5000)
-    }
-  }
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case "healthy":
@@ -469,7 +447,6 @@ export default function SettingsView() {
               { id: "email", label: "Email", icon: Mail },
               { id: "performance", label: "Performance", icon: Zap },
               { id: "maintenance", label: "Maintenance", icon: HardDrive },
-              { id: "drive", label: "Google Drive", icon: Cloud },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -1003,22 +980,6 @@ export default function SettingsView() {
                   </div>
                 </div>
               )}
-            </div>
-          )}
-
-          {activeTab === "drive" && (
-            <div className="space-y-6">
-              <h3 className="text-xl font-semibold">Google Drive Integration</h3>
-
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <Cloud className="h-5 w-5 text-blue-600" />
-                  <span className="font-medium text-blue-900">Connected Account</span>
-                </div>
-                <div className="text-sm text-blue-800">{googleAuth.getCurrentUser()?.email}</div>
-              </div>
-
-              <DriveExport />
             </div>
           )}
         </div>
