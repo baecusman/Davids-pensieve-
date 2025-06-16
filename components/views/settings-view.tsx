@@ -175,26 +175,33 @@ export default function SettingsView() {
 
   const handleExport = async (format: "json" | "csv" = "json") => {
     setIsExporting(true)
+    console.log(`📤 Starting ${format.toUpperCase()} export...`)
+
     try {
-      const data = databaseService.exportData(format)
+      const data = await databaseService.exportData(format)
+      console.log(`📊 Export data size: ${data.length} characters`)
+
       const blob = new Blob([data], {
         type: format === "json" ? "application/json" : "text/csv",
       })
+
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = `pensive-export-${new Date().toISOString().split("T")[0]}.${format}`
+      const filename = `pensive-export-${new Date().toISOString().split("T")[0]}.${format}`
+      a.download = filename
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
 
-      setStatus(`✅ Data exported as ${format.toUpperCase()}`)
-      setTimeout(() => setStatus(""), 3000)
+      console.log(`✅ Export successful: ${filename}`)
+      setStatus(`✅ Data exported as ${format.toUpperCase()} - ${filename}`)
+      setTimeout(() => setStatus(""), 5000)
     } catch (error) {
-      console.error("Export error:", error)
-      setStatus("❌ Export failed")
-      setTimeout(() => setStatus(""), 3000)
+      console.error("❌ Export error:", error)
+      setStatus(`❌ Export failed: ${error.message}`)
+      setTimeout(() => setStatus(""), 5000)
     } finally {
       setIsExporting(false)
     }
@@ -204,6 +211,7 @@ export default function SettingsView() {
     const file = event.target.files?.[0]
     if (!file) return
 
+    console.log(`📥 Starting import of file: ${file.name} (${file.size} bytes)`)
     setIsImporting(true)
     setStatus("Reading file...")
 
@@ -211,12 +219,15 @@ export default function SettingsView() {
     reader.onload = async (e) => {
       try {
         const content = e.target?.result as string
+        console.log(`📄 File content length: ${content.length} characters`)
 
         if (file.name.endsWith(".json")) {
           const data = JSON.parse(content)
+          console.log("📋 Parsed JSON data:", Object.keys(data))
 
           if (data.content && Array.isArray(data.content)) {
             setStatus(`Importing ${data.content.length} items...`)
+            console.log(`📦 Found ${data.content.length} content items to import`)
 
             let imported = 0
             let errors = 0
@@ -231,66 +242,68 @@ export default function SettingsView() {
                   analysis: item.analysis,
                 })
                 imported++
+
+                if (imported % 10 === 0) {
+                  console.log(`📈 Import progress: ${imported}/${data.content.length}`)
+                }
               } catch (error) {
-                console.error("Error importing item:", error)
+                console.error("❌ Error importing item:", error)
                 errors++
               }
             }
 
+            console.log(`✅ Import completed: ${imported} successful, ${errors} errors`)
             setStatus(`✅ Imported ${imported} items${errors > 0 ? ` (${errors} errors)` : ""}`)
             loadData()
           } else {
-            setStatus("❌ Invalid file format")
+            console.error("❌ Invalid file format - missing content array")
+            setStatus("❌ Invalid file format - expected content array")
           }
         } else {
+          console.error("❌ Unsupported file type")
           setStatus("❌ Only JSON files are supported for import")
         }
       } catch (error) {
-        console.error("Import error:", error)
-        setStatus("❌ Import failed - invalid file format")
+        console.error("❌ Import error:", error)
+        setStatus(`❌ Import failed: ${error.message}`)
       } finally {
         setIsImporting(false)
-        setTimeout(() => setStatus(""), 5000)
+        setTimeout(() => setStatus(""), 8000)
       }
     }
 
     reader.readAsText(file)
   }
 
-  const handleVacuum = async () => {
-    setIsVacuuming(true)
-    setStatus("🧹 Cleaning database...")
-
-    try {
-      const result = databaseService.vacuum()
-      setStatus(
-        `✅ Cleaned ${result.cleaned} items${result.errors.length > 0 ? ` (${result.errors.length} errors)` : ""}`,
-      )
-      loadData()
-      performHealthCheck()
-    } catch (error) {
-      console.error("Vacuum error:", error)
-      setStatus("❌ Database cleanup failed")
-    } finally {
-      setIsVacuuming(false)
-      setTimeout(() => setStatus(""), 5000)
+  const handleClearAll = async () => {
+    if (window.confirm("Are you sure you want to delete all data? This action cannot be undone.")) {
+      setStatus("⏳ Clearing all data...")
+      try {
+        await databaseService.clearAllData()
+        setStatus("✅ All data cleared")
+        loadData() // Refresh data
+      } catch (error) {
+        console.error("Clear all error:", error)
+        setStatus("❌ Failed to clear all data")
+      } finally {
+        setTimeout(() => setStatus(""), 3000)
+      }
     }
   }
 
-  const handleClearAll = async () => {
-    if (!confirm("Are you sure you want to clear ALL data? This cannot be undone.")) {
-      return
-    }
+  const handleVacuum = async () => {
+    setIsVacuuming(true)
+    setStatus("⏳ Cleaning database...")
 
     try {
-      databaseService.clear()
-      setStatus("✅ All data cleared")
-      loadData()
-      performHealthCheck()
+      await databaseService.vacuumDatabase()
+      setStatus("✅ Database cleaned")
+      performHealthCheck() // Refresh health check
     } catch (error) {
-      console.error("Clear error:", error)
-      setStatus("❌ Failed to clear data")
+      console.error("Vacuum error:", error)
+      setStatus("❌ Failed to clean database")
     } finally {
+      setIsVacuuming(false)
       setTimeout(() => setStatus(""), 3000)
     }
   }
@@ -302,8 +315,22 @@ export default function SettingsView() {
       return
     }
 
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(digestEmail)) {
+      setStatus("❌ Please enter a valid email address")
+      setTimeout(() => setStatus(""), 3000)
+      return
+    }
+
     const currentUser = simpleAuth.getCurrentUser()
-    if (!currentUser) return
+    if (!currentUser) {
+      setStatus("❌ No user logged in")
+      setTimeout(() => setStatus(""), 3000)
+      return
+    }
+
+    console.log(`📧 Scheduling digest for user ${currentUser.username} at email ${digestEmail}`)
 
     // Update user email
     simpleAuth.updateUserEmail(digestEmail)
@@ -313,9 +340,11 @@ export default function SettingsView() {
 
     if (success) {
       setStatus("✅ Weekly digest scheduled for Mondays at 4 AM ET")
+      console.log("✅ Digest scheduling successful")
       loadData() // Refresh status
     } else {
       setStatus("❌ Failed to schedule digest")
+      console.error("❌ Digest scheduling failed")
     }
 
     setTimeout(() => setStatus(""), 5000)
