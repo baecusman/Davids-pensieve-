@@ -8,10 +8,10 @@ const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "Pensive - AI-Powered Knowledge Management",
-  description: "Curated intelligence system for analyzing and connecting information",
+  description: "Personal knowledge management system for analyzing and connecting information",
   viewport: "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no",
   themeColor: "#3b82f6",
-    generator: 'v0.dev'
+  generator: "v0.dev",
 }
 
 export default function RootLayout({

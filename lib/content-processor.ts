@@ -29,52 +29,113 @@ export class ContentProcessor {
     content?: string
     title?: string
   }): Promise<ContentAnalysis> {
-    console.log("ContentProcessor.analyzeContent called with:", params)
-
-    const response = await fetch("/api/grok/analyze", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(params),
+    console.log("ContentProcessor.analyzeContent called with:", {
+      hasUrl: !!params.url,
+      hasContent: !!params.content,
+      hasTitle: !!params.title,
+      contentLength: params.content?.length,
     })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error("Analysis API error:", response.status, errorText)
-      throw new Error(`Analysis failed: ${response.statusText}`)
-    }
+    try {
+      const response = await fetch("/api/grok/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(params),
+      })
 
-    const analysis = await response.json()
-    console.log("Analysis result:", analysis)
+      console.log("Analysis API response status:", response.status)
 
-    // Store the analyzed content in the database
-    if (params.url && params.content && params.title) {
-      console.log("Storing content in database...")
-      try {
-        const result = await databaseService.storeAnalyzedContent({
-          title: params.title,
-          url: params.url,
-          content: params.content,
-          source: analysis.source || "manual",
-          analysis: {
-            summary: analysis.summary,
-            entities: analysis.entities,
-            relationships: analysis.relationships,
-            tags: analysis.tags,
-            priority: analysis.priority,
-            fullContent: analysis.fullContent,
-            confidence: analysis.confidence || 0.8,
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error("Analysis API error:", response.status, errorText)
+        throw new Error(`Analysis failed (${response.status}): ${errorText}`)
+      }
+
+      const rawAnalysis = await response.json()
+      console.log("Raw analysis result:", rawAnalysis)
+
+      // Handle the response structure correctly
+      let analysis: ContentAnalysis
+
+      if (rawAnalysis.error) {
+        throw new Error(rawAnalysis.error)
+      }
+
+      // The API now returns the analysis directly, not wrapped in an 'analysis' property
+      if (rawAnalysis.summary && rawAnalysis.entities) {
+        analysis = rawAnalysis
+      } else {
+        console.error("Invalid analysis structure:", rawAnalysis)
+        // Create fallback analysis
+        analysis = {
+          summary: {
+            sentence: `Analysis of "${params.title || "Content"}"`,
+            paragraph: params.content ? params.content.substring(0, 500) + "..." : "Content analysis summary",
+            isFullRead: false,
           },
-        })
-        console.log("Content stored:", result)
-      } catch (error) {
-        console.error("Error storing content in database:", error)
-        // Don't fail the analysis if storage fails
+          entities: [{ name: "General Content", type: "concept" }],
+          relationships: [],
+          tags: ["analysis", "content"],
+          priority: "read" as const,
+          fullContent: params.content,
+          confidence: 0.5,
+          source: params.url ? new URL(params.url).hostname : "manual",
+          analyzedAt: new Date().toISOString(),
+        }
+      }
+
+      console.log("Processed analysis:", analysis)
+
+      // Store the analyzed content in the database
+      if (params.url && params.content && params.title) {
+        console.log("Storing content in database...")
+        try {
+          const result = await databaseService.storeAnalyzedContent({
+            title: params.title,
+            url: params.url,
+            content: params.content,
+            source: analysis.source,
+            analysis: {
+              summary: analysis.summary,
+              entities: analysis.entities,
+              relationships: analysis.relationships,
+              tags: analysis.tags,
+              priority: analysis.priority,
+              fullContent: analysis.fullContent,
+              confidence: analysis.confidence || 0.8,
+            },
+          })
+          console.log("Content stored successfully:", result)
+        } catch (storageError) {
+          console.error("Error storing content in database:", storageError)
+          // Don't fail the analysis if storage fails, just log it
+        }
+      }
+
+      return analysis
+    } catch (error) {
+      console.error("ContentProcessor.analyzeContent error:", error)
+
+      // Return a fallback analysis instead of throwing
+      console.log("Returning fallback analysis due to error")
+      return {
+        summary: {
+          sentence: `Analysis of "${params.title || "Content"}" (Error occurred)`,
+          paragraph: "An error occurred during analysis. This is a fallback summary.",
+          isFullRead: false,
+        },
+        entities: [{ name: "Error Analysis", type: "concept" }],
+        relationships: [],
+        tags: ["error", "fallback"],
+        priority: "skim" as const,
+        fullContent: params.content,
+        confidence: 0.1,
+        source: params.url ? new URL(params.url).hostname : "error",
+        analyzedAt: new Date().toISOString(),
       }
     }
-
-    return analysis
   }
 
   static async analyzeUrl(url: string): Promise<ContentAnalysis> {
@@ -202,11 +263,11 @@ export class ContentProcessor {
   }
 
   static backupData(): string {
-    return databaseService.backup()
+    return databaseService.backupData()
   }
 
   static restoreData(backup: string) {
-    return databaseService.restore(backup)
+    return databaseService.restoreData(backup)
   }
 
   static exportData(format: "json" | "csv" = "json"): string {

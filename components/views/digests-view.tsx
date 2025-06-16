@@ -39,13 +39,15 @@ export default function DigestsView() {
     const timer = performanceMonitor.startTimer("db-query")
 
     try {
-      const result = ContentProcessor.getStoredContent({
+      // Get content directly from ContentProcessor
+      const content = ContentProcessor.getStoredContent({
         limit: 100,
         timeframe: activeDigestType,
       })
 
-      const content = Array.isArray(result) ? result : result.items || []
-      const count = Array.isArray(result) ? result.length : result.total || 0
+      console.log("Loaded content for digests:", content.length, "items")
+
+      const count = content.length
 
       setStoredContent(content)
       setRealContentCount(count)
@@ -93,6 +95,9 @@ export default function DigestsView() {
     const timer = performanceMonitor.startTimer("api-call")
 
     try {
+      // Refresh content data first
+      await loadContentData()
+
       if (storedContent.length === 0) {
         setGenerationStatus("No analyzed content found. Please add some sources and analyze content first.")
         setTimeout(() => setGenerationStatus(""), 5000)
@@ -137,7 +142,7 @@ export default function DigestsView() {
       setIsGenerating(false)
       timer()
     }
-  }, [isGenerating, storedContent, activeDigestType])
+  }, [isGenerating, storedContent, activeDigestType, loadContentData])
 
   // Memoized content items for performance
   const contentItems = useMemo(() => {

@@ -22,12 +22,14 @@ interface AuthSession {
 }
 
 class SimpleAuthManager {
-  private static instance: SimpleAuthManager
+  private static instance: SimpleAuthManager | null = null
   private users: Map<string, User> = new Map()
   private currentSession: AuthSession | null = null
   private storageKey = "pensive-simple-users"
   private sessionKey = "pensive-simple-session"
   private sessionDuration = 24 * 60 * 60 * 1000 // 24 hours
+  private isClient: boolean
+  private initialized = false
 
   static getInstance(): SimpleAuthManager {
     if (!SimpleAuthManager.instance) {
@@ -37,12 +39,26 @@ class SimpleAuthManager {
   }
 
   constructor() {
-    this.loadUsers()
-    this.loadSession()
-    this.createDefaultUsers()
+    this.isClient = typeof window !== "undefined"
+  }
+
+  initialize(): void {
+    if (!this.initialized && this.isClient) {
+      try {
+        this.loadUsers()
+        this.loadSession()
+        this.createDefaultUsers()
+        this.initialized = true
+        console.log("SimpleAuth initialized successfully")
+      } catch (error) {
+        console.error("SimpleAuth initialization failed:", error)
+      }
+    }
   }
 
   private loadUsers(): void {
+    if (!this.isClient) return
+
     try {
       const stored = localStorage.getItem(this.storageKey)
       if (stored) {
@@ -58,6 +74,8 @@ class SimpleAuthManager {
   }
 
   private saveUsers(): void {
+    if (!this.isClient) return
+
     try {
       const usersArray = Array.from(this.users.values())
       localStorage.setItem(this.storageKey, JSON.stringify(usersArray))
@@ -67,6 +85,8 @@ class SimpleAuthManager {
   }
 
   private loadSession(): void {
+    if (!this.isClient) return
+
     try {
       const stored = localStorage.getItem(this.sessionKey)
       if (stored) {
@@ -83,11 +103,15 @@ class SimpleAuthManager {
       }
     } catch (error) {
       console.error("Error loading session:", error)
-      localStorage.removeItem(this.sessionKey)
+      if (this.isClient) {
+        localStorage.removeItem(this.sessionKey)
+      }
     }
   }
 
   private saveSession(): void {
+    if (!this.isClient) return
+
     try {
       if (this.currentSession) {
         localStorage.setItem(this.sessionKey, JSON.stringify(this.currentSession))
@@ -100,6 +124,8 @@ class SimpleAuthManager {
   }
 
   private createDefaultUsers(): void {
+    if (!this.isClient) return
+
     // Create 10 default users if none exist
     if (this.users.size === 0) {
       for (let i = 1; i <= 10; i++) {
@@ -127,6 +153,14 @@ class SimpleAuthManager {
   }
 
   login(username: string, password: string): { success: boolean; user?: User; error?: string } {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) {
+      return { success: false, error: "Client-side only operation" }
+    }
+
     try {
       const user = Array.from(this.users.values()).find((u) => u.username === username && u.password === password)
 
@@ -159,6 +193,8 @@ class SimpleAuthManager {
   }
 
   logout(): void {
+    if (!this.isClient) return
+
     if (this.currentSession) {
       console.log(`User logged out: ${this.currentSession.username}`)
       this.currentSession = null
@@ -167,6 +203,11 @@ class SimpleAuthManager {
   }
 
   getCurrentUser(): User | null {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) return null
     if (!this.currentSession) return null
 
     const user = this.users.get(this.currentSession.userId)
@@ -174,10 +215,20 @@ class SimpleAuthManager {
   }
 
   getCurrentUserId(): string | null {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) return null
     return this.currentSession?.userId || null
   }
 
   isAuthenticated(): boolean {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) return false
     if (!this.currentSession) return false
 
     // Check if session is expired
@@ -190,10 +241,21 @@ class SimpleAuthManager {
   }
 
   getAllUsers(): User[] {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) return []
     return Array.from(this.users.values()).sort((a, b) => Number.parseInt(a.username) - Number.parseInt(b.username))
   }
 
   updateUserPreferences(preferences: Partial<User["preferences"]>): boolean {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) return false
+
     const currentUser = this.getCurrentUser()
     if (!currentUser) return false
 
@@ -218,6 +280,12 @@ class SimpleAuthManager {
   }
 
   updateUserEmail(email: string): boolean {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) return false
+
     const currentUser = this.getCurrentUser()
     if (!currentUser) return false
 
@@ -242,8 +310,9 @@ class SimpleAuthManager {
     }
   }
 
-  // Session management
   extendSession(): void {
+    if (!this.isClient) return
+
     if (this.currentSession) {
       const expiresAt = new Date(Date.now() + this.sessionDuration).toISOString()
       this.currentSession.expiresAt = expiresAt
@@ -252,6 +321,11 @@ class SimpleAuthManager {
   }
 
   getSessionInfo(): { username: string; loginTime: string; expiresAt: string } | null {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) return null
     if (!this.currentSession) return null
 
     return {
@@ -261,12 +335,23 @@ class SimpleAuthManager {
     }
   }
 
-  // Admin functions
   getUserStats(): {
     totalUsers: number
     activeUsers: number
     recentLogins: Array<{ username: string; lastLogin: string }>
   } {
+    if (!this.initialized) {
+      this.initialize()
+    }
+
+    if (!this.isClient) {
+      return {
+        totalUsers: 0,
+        activeUsers: 0,
+        recentLogins: [],
+      }
+    }
+
     const users = this.getAllUsers()
     const now = new Date()
     const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
@@ -284,4 +369,23 @@ class SimpleAuthManager {
   }
 }
 
-export const simpleAuth = SimpleAuthManager.getInstance()
+// Create a function that returns the instance instead of creating it immediately
+export function getSimpleAuth(): SimpleAuthManager {
+  return SimpleAuthManager.getInstance()
+}
+
+// For backward compatibility, but this won't be instantiated until called
+export const simpleAuth = {
+  login: (username: string, password: string) => getSimpleAuth().login(username, password),
+  logout: () => getSimpleAuth().logout(),
+  getCurrentUser: () => getSimpleAuth().getCurrentUser(),
+  getCurrentUserId: () => getSimpleAuth().getCurrentUserId(),
+  isAuthenticated: () => getSimpleAuth().isAuthenticated(),
+  getAllUsers: () => getSimpleAuth().getAllUsers(),
+  updateUserPreferences: (preferences: any) => getSimpleAuth().updateUserPreferences(preferences),
+  updateUserEmail: (email: string) => getSimpleAuth().updateUserEmail(email),
+  extendSession: () => getSimpleAuth().extendSession(),
+  getSessionInfo: () => getSimpleAuth().getSessionInfo(),
+  getUserStats: () => getSimpleAuth().getUserStats(),
+  initialize: () => getSimpleAuth().initialize(),
+}

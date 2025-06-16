@@ -13,6 +13,7 @@ interface NavigationProps {
 export default function Navigation({ activeView, onViewChange, user, onLogout }: NavigationProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
+  const [showNotifications, setShowNotifications] = useState(false)
 
   const navItems = [
     {
@@ -79,10 +80,45 @@ export default function Navigation({ activeView, onViewChange, user, onLogout }:
           {/* User Menu */}
           <div className="flex items-center gap-3">
             {/* Notifications */}
-            <button className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 relative">
-              <Bell className="h-5 w-5" />
-              <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 rounded-full"></span>
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 relative"
+              >
+                <Bell className="h-5 w-5" />
+                <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 rounded-full"></span>
+              </button>
+
+              {/* Notifications Dropdown */}
+              {showNotifications && (
+                <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50">
+                  <div className="px-4 py-3 border-b border-gray-100">
+                    <p className="text-sm font-medium text-gray-900">Notifications</p>
+                  </div>
+
+                  <div className="py-2 max-h-64 overflow-y-auto">
+                    <div className="px-4 py-3 hover:bg-gray-50">
+                      <p className="text-sm text-gray-900">RSS feed processing complete</p>
+                      <p className="text-xs text-gray-500">2 new articles from Stratechery</p>
+                    </div>
+
+                    <div className="px-4 py-3 hover:bg-gray-50">
+                      <p className="text-sm text-gray-900">Podcast episode analyzed</p>
+                      <p className="text-xs text-gray-500">New episode processed successfully</p>
+                    </div>
+
+                    <div className="px-4 py-3 hover:bg-gray-50">
+                      <p className="text-sm text-gray-900">Content analysis ready</p>
+                      <p className="text-xs text-gray-500">Article from Lenny's Newsletter</p>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-gray-100 px-4 py-2">
+                    <button className="text-xs text-blue-600 hover:text-blue-800">Mark all as read</button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* User Profile */}
             <div className="relative">
@@ -188,12 +224,13 @@ export default function Navigation({ activeView, onViewChange, user, onLogout }:
       )}
 
       {/* Click outside to close menus */}
-      {(showUserMenu || isMobileMenuOpen) && (
+      {(showUserMenu || isMobileMenuOpen || showNotifications) && (
         <div
           className="fixed inset-0 z-40"
           onClick={() => {
             setShowUserMenu(false)
             setIsMobileMenuOpen(false)
+            setShowNotifications(false)
           }}
         />
       )}

@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react"
 import { simpleAuth } from "@/lib/auth/simple-auth"
 import { userSegmentedDatabase } from "@/lib/database/user-segmented-database"
-import { performanceMonitor } from "@/lib/performance-monitor"
 import SimpleLogin from "@/components/auth/simple-login"
 import Navigation from "@/components/navigation"
 import DigestsView from "@/components/views/digests-view"
@@ -16,67 +15,119 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<any>(null)
   const [activeView, setActiveView] = useState<"digests" | "concept-map" | "source-management" | "settings">("digests")
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const timer = performanceMonitor.startTimer("auth-check")
+    try {
+      console.log("App initializing...")
 
-    if (simpleAuth.isAuthenticated()) {
-      const user = simpleAuth.getCurrentUser()
-      if (user) {
-        setCurrentUser(user)
+      // Initialize client-side services only after component mounts
+      if (typeof window !== "undefined") {
+        console.log("Initializing auth...")
+        simpleAuth.initialize()
 
-        // Migrate existing data if needed
-        const migrationResult = userSegmentedDatabase.migrateExistingData()
-        if (migrationResult.migrated > 0) {
-          console.log(`Migrated ${migrationResult.migrated} records for user segmentation`)
+        console.log("Checking authentication...")
+        if (simpleAuth.isAuthenticated()) {
+          const user = simpleAuth.getCurrentUser()
+          console.log("User found:", user?.username)
+          if (user) {
+            setCurrentUser(user)
+
+            // Try to migrate existing data if needed
+            try {
+              const migrationResult = userSegmentedDatabase.migrateExistingData()
+              if (migrationResult.migrated > 0) {
+                console.log(`Migrated ${migrationResult.migrated} records for user segmentation`)
+              }
+            } catch (migrationError) {
+              console.warn("Migration failed:", migrationError)
+              // Don't crash the app for migration failures
+            }
+          }
         }
       }
-    }
 
-    timer()
-    setIsLoading(false)
+      setIsLoading(false)
+    } catch (error) {
+      console.error("App initialization error:", error)
+      setError(error instanceof Error ? error.message : "Failed to initialize app")
+      setIsLoading(false)
+    }
   }, [])
 
   const handleLogin = (user: any) => {
-    const timer = performanceMonitor.startTimer("login")
-    setCurrentUser(user)
+    try {
+      console.log("Handling login for:", user?.username)
+      setCurrentUser(user)
+      setError(null)
 
-    // Extend session on activity
-    simpleAuth.extendSession()
-    timer()
+      // Extend session on activity
+      simpleAuth.extendSession()
+    } catch (error) {
+      console.error("Login error:", error)
+      setError("Login failed")
+    }
   }
 
   const handleLogout = () => {
-    const timer = performanceMonitor.startTimer("logout")
-    simpleAuth.logout()
-    setCurrentUser(null)
-    setActiveView("digests")
-    timer()
+    try {
+      console.log("Handling logout")
+      simpleAuth.logout()
+      setCurrentUser(null)
+      setActiveView("digests")
+      setError(null)
+    } catch (error) {
+      console.error("Logout error:", error)
+    }
   }
 
   const renderActiveView = () => {
-    const timer = performanceMonitor.startTimer("render")
-
-    let component
-    switch (activeView) {
-      case "digests":
-        component = <DigestsView />
-        break
-      case "concept-map":
-        component = <ConceptMapView />
-        break
-      case "source-management":
-        component = <SourceManagementView />
-        break
-      case "settings":
-        component = <SettingsView />
-        break
-      default:
-        component = <DigestsView />
+    try {
+      switch (activeView) {
+        case "digests":
+          return <DigestsView />
+        case "concept-map":
+          return <ConceptMapView />
+        case "source-management":
+          return <SourceManagementView />
+        case "settings":
+          return <SettingsView />
+        default:
+          return <DigestsView />
+      }
+    } catch (error) {
+      console.error("View render error:", error)
+      return (
+        <div className="p-8 text-center">
+          <p className="text-red-600">Error loading view: {error instanceof Error ? error.message : "Unknown error"}</p>
+          <button onClick={() => setActiveView("digests")} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded">
+            Return to Digests
+          </button>
+        </div>
+      )
     }
+  }
 
-    timer()
-    return component
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-red-600 mb-4">
+            <p className="text-xl font-semibold">App Error</p>
+            <p className="text-sm">{error}</p>
+          </div>
+          <button
+            onClick={() => {
+              setError(null)
+              window.location.reload()
+            }}
+            className="px-4 py-2 bg-blue-600 text-white rounded"
+          >
+            Reload App
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (isLoading) {

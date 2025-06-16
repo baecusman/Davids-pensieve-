@@ -42,6 +42,54 @@ export class DatabaseService {
         throw new Error("Missing required content fields")
       }
 
+      // Validate and normalize analysis data
+      if (!data.analysis) {
+        throw new Error("Analysis data is required")
+      }
+
+      // Ensure analysis has proper structure with defaults
+      const normalizedAnalysis = {
+        summary: {
+          sentence: data.analysis.summary?.sentence || `Summary of "${data.title}"`,
+          paragraph: data.analysis.summary?.paragraph || data.content.substring(0, 500) + "...",
+          isFullRead: data.analysis.summary?.isFullRead || false,
+        },
+        entities: Array.isArray(data.analysis.entities)
+          ? data.analysis.entities
+              .filter((e) => e && e.name && e.type)
+              .map((e) => ({
+                name: String(e.name).trim(),
+                type: String(e.type) as any,
+              }))
+          : [],
+        relationships: Array.isArray(data.analysis.relationships)
+          ? data.analysis.relationships
+              .filter((r) => r && r.from && r.to && r.type)
+              .map((r) => ({
+                from: String(r.from).trim(),
+                to: String(r.to).trim(),
+                type: String(r.type) as any,
+              }))
+          : [],
+        tags: Array.isArray(data.analysis.tags)
+          ? data.analysis.tags.filter((tag) => tag && typeof tag === "string").map((tag) => String(tag).trim())
+          : [],
+        priority:
+          data.analysis.priority && ["skim", "read", "deep-dive"].includes(data.analysis.priority)
+            ? data.analysis.priority
+            : ("read" as const),
+        fullContent: data.analysis.fullContent || undefined,
+        confidence:
+          typeof data.analysis.confidence === "number" ? Math.max(0, Math.min(1, data.analysis.confidence)) : 0.8,
+      }
+
+      console.log("Normalized analysis:", {
+        entitiesCount: normalizedAnalysis.entities.length,
+        relationshipsCount: normalizedAnalysis.relationships.length,
+        tagsCount: normalizedAnalysis.tags.length,
+        priority: normalizedAnalysis.priority,
+      })
+
       // Check for duplicates using improved deduplication
       const normalizedUrl = this.normalizeUrl(data.url)
       const existingContent = this.findContentByUrl(normalizedUrl)
@@ -64,29 +112,114 @@ export class DatabaseService {
         source: data.source,
       })
 
-      // Create analysis record with validation
+      // Create analysis record with normalized data
       const analysisId = await this.contentRepo.createAnalysis({
         contentId,
-        summary: data.analysis.summary,
-        entities: data.analysis.entities.map((e) => ({
-          name: e.name.trim(),
-          type: e.type as any,
-        })),
-        relationships: data.analysis.relationships.map((r) => ({
-          from: r.from.trim(),
-          to: r.to.trim(),
-          type: r.type as any,
-        })),
-        tags: data.analysis.tags.filter((tag) => tag.trim()).map((tag) => tag.trim()),
-        priority: data.analysis.priority,
-        fullContent: data.analysis.fullContent,
-        confidence: Math.max(0, Math.min(1, data.analysis.confidence || 0.8)),
+        summary: normalizedAnalysis.summary,
+        entities: normalizedAnalysis.entities,
+        relationships: normalizedAnalysis.relationships,
+        tags: normalizedAnalysis.tags,
+        priority: normalizedAnalysis.priority,
+        fullContent: normalizedAnalysis.fullContent,
+        confidence: normalizedAnalysis.confidence,
       })
+
+      // Process concepts and relationships for concept map
+      await this.processConceptsAndRelationships(contentId, normalizedAnalysis)
 
       return { contentId, analysisId, isNew: true }
     } catch (error) {
       console.error("Error storing analyzed content:", error)
+      console.error("Data received:", {
+        title: data.title,
+        url: data.url,
+        contentLength: data.content?.length,
+        analysisStructure: data.analysis ? Object.keys(data.analysis) : "null",
+        entitiesType: typeof data.analysis?.entities,
+        entitiesValue: data.analysis?.entities,
+      })
       throw new Error(`Failed to store content: ${error instanceof Error ? error.message : "Unknown error"}`)
+    }
+  }
+
+  private async processConceptsAndRelationships(contentId: string, analysis: any) {
+    try {
+      console.log("Processing concepts and relationships for content:", contentId)
+
+      // Create concepts from entities and tags
+      const allConcepts = [
+        ...analysis.entities.map((e: any) => ({ name: e.name, type: e.type })),
+        ...analysis.tags.map((tag: string) => ({ name: tag, type: "concept" })),
+      ]
+
+      // Deduplicate concepts
+      const uniqueConcepts = allConcepts.reduce((acc: any[], concept: any) => {
+        if (!acc.find((c) => c.name.toLowerCase() === concept.name.toLowerCase())) {
+          acc.push(concept)
+        }
+        return acc
+      }, [])
+
+      console.log("Creating concepts:", uniqueConcepts.length)
+
+      // Create or update concepts
+      const conceptIds: string[] = []
+      for (const concept of uniqueConcepts) {
+        try {
+          const conceptId = await this.conceptRepo.createOrUpdateConcept({
+            name: concept.name,
+            type: concept.type,
+            description: `Concept extracted from content analysis`,
+          })
+          conceptIds.push(conceptId)
+
+          // Link concept to content
+          await this.conceptRepo.linkConceptToContent(conceptId, contentId)
+        } catch (error) {
+          console.error("Error creating concept:", concept.name, error)
+        }
+      }
+
+      // Create relationships between concepts
+      console.log("Creating relationships between concepts")
+      for (let i = 0; i < conceptIds.length; i++) {
+        for (let j = i + 1; j < conceptIds.length; j++) {
+          try {
+            await this.conceptRepo.createRelationship({
+              fromConceptId: conceptIds[i],
+              toConceptId: conceptIds[j],
+              type: "CO_OCCURS",
+              weight: 0.5,
+              contentId,
+            })
+          } catch (error) {
+            console.error("Error creating relationship:", error)
+          }
+        }
+      }
+
+      // Process explicit relationships from analysis
+      for (const rel of analysis.relationships) {
+        try {
+          const fromConcept = await this.conceptRepo.findOrCreateConcept(rel.from, "concept")
+          const toConcept = await this.conceptRepo.findOrCreateConcept(rel.to, "concept")
+
+          await this.conceptRepo.createRelationship({
+            fromConceptId: fromConcept,
+            toConceptId: toConcept,
+            type: rel.type,
+            weight: 0.8,
+            contentId,
+          })
+        } catch (error) {
+          console.error("Error creating explicit relationship:", rel, error)
+        }
+      }
+
+      console.log("Finished processing concepts and relationships")
+    } catch (error) {
+      console.error("Error in processConceptsAndRelationships:", error)
+      // Don't throw - this shouldn't fail the main content storage
     }
   }
 
@@ -159,7 +292,19 @@ export class DatabaseService {
       }
       if (options.timeframe) {
         const cutoffDate = this.getTimeframeCutoff(options.timeframe)
-        results = results.filter((r) => new Date(r.content.createdAt) >= cutoffDate)
+        console.log(`Filtering by timeframe ${options.timeframe}, cutoff: ${cutoffDate.toISOString()}`)
+
+        const beforeFilter = results.length
+        results = results.filter((r) => {
+          const contentDate = new Date(r.content.createdAt)
+          const isWithinTimeframe = contentDate >= cutoffDate
+          console.log(
+            `Content ${r.content.title}: ${contentDate.toISOString()} >= ${cutoffDate.toISOString()} = ${isWithinTimeframe}`,
+          )
+          return isWithinTimeframe
+        })
+
+        console.log(`Timeframe filter: ${beforeFilter} -> ${results.length} items`)
       }
 
       const total = results.length
@@ -190,6 +335,8 @@ export class DatabaseService {
         source: content.source,
       }))
 
+      console.log("DatabaseService.getStoredContent returning:", items.length, "items out of", total, "total")
+
       return {
         items,
         total,
@@ -207,7 +354,8 @@ export class DatabaseService {
 
     switch (timeframe) {
       case "weekly":
-        cutoffDate.setDate(now.getDate() - 7)
+        // Make weekly more inclusive - last 10 days instead of 7
+        cutoffDate.setDate(now.getDate() - 10)
         break
       case "monthly":
         cutoffDate.setMonth(now.getMonth() - 1)
@@ -220,13 +368,12 @@ export class DatabaseService {
     return cutoffDate
   }
 
-  // Enhanced Concept Management with proper abstraction level filtering
+  // Enhanced Concept Management with proper relationship linking
   getConceptMapData(abstractionLevel = 50, searchQuery = "") {
     try {
       console.log("DatabaseService: Getting concept map data", { abstractionLevel, searchQuery })
 
       // Convert abstraction level (0-100) to minimum frequency threshold
-      // Higher abstraction = higher threshold = fewer, more important concepts
       const maxFrequency = this.getMaxConceptFrequency()
       const minFrequency = Math.max(1, Math.floor((abstractionLevel / 100) * maxFrequency))
 
@@ -249,7 +396,6 @@ export class DatabaseService {
             node.name?.toLowerCase().includes(query) ||
             node.description?.toLowerCase().includes(query) ||
             node.type?.toLowerCase().includes(query) ||
-            // Fuzzy matching for partial words
             this.fuzzyMatch(node.name?.toLowerCase() || "", query),
         )
       }
@@ -267,7 +413,7 @@ export class DatabaseService {
           label: node.name || "Unknown",
           type: node.type || "concept",
           density: this.calculateNodeDensity(node.frequency || 0, maxFrequency),
-          articles: [], // Will be populated if needed
+          articles: this.getArticleIdsForConcept(node.id), // Get actual article IDs
           description: node.description || "",
           source: "analyzed" as const,
           frequency: node.frequency || 0,
@@ -286,6 +432,15 @@ export class DatabaseService {
     } catch (error) {
       console.error("Error getting concept map data:", error)
       return { nodes: [], edges: [] }
+    }
+  }
+
+  private getArticleIdsForConcept(conceptId: string): string[] {
+    try {
+      return this.conceptRepo.getArticleIdsForConcept(conceptId)
+    } catch (error) {
+      console.error("Error getting article IDs for concept:", conceptId, error)
+      return []
     }
   }
 
@@ -327,7 +482,23 @@ export class DatabaseService {
 
   getConceptDetails(conceptId: string) {
     try {
-      return this.conceptRepo.getConceptDetails(conceptId)
+      const details = this.conceptRepo.getConceptDetails(conceptId)
+
+      if (!details.concept) {
+        return { concept: null, relatedConcepts: [], articles: [] }
+      }
+
+      // Get actual article count for related concepts
+      const relatedConceptsWithCounts = details.relatedConcepts.map((concept) => ({
+        ...concept,
+        articleCount: this.getArticleIdsForConcept(concept.id).length,
+      }))
+
+      return {
+        concept: details.concept,
+        relatedConcepts: relatedConceptsWithCounts,
+        articles: details.articles,
+      }
     } catch (error) {
       console.error("Error getting concept details:", error)
       return { concept: null, relatedConcepts: [], articles: [] }
@@ -468,6 +639,133 @@ export class DatabaseService {
     } catch (error) {
       console.error("Error getting content by timeframe:", error)
       return []
+    }
+  }
+
+  // RSS Historical Archive Processing
+  async processRSSHistoricalArchive(
+    feedUrl: string,
+    maxItems = 100,
+  ): Promise<{
+    processed: number
+    errors: string[]
+    items: any[]
+  }> {
+    const results = {
+      processed: 0,
+      errors: [] as string[],
+      items: [] as any[],
+    }
+
+    try {
+      console.log(`Processing RSS historical archive for: ${feedUrl}`)
+
+      // Fetch the RSS feed
+      const response = await fetch("/api/rss/fetch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ url: feedUrl }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch RSS feed: ${response.statusText}`)
+      }
+
+      const feedData = await response.json()
+      const items = feedData.items.slice(0, maxItems) // Limit items
+
+      console.log(`Found ${items.length} items in RSS feed`)
+
+      // Process each item
+      for (const item of items) {
+        try {
+          console.log(`Processing RSS item: ${item.title}`)
+
+          // Check if already processed
+          const existing = this.findContentByUrl(item.link)
+          if (existing) {
+            console.log(`Skipping existing item: ${item.title}`)
+            continue
+          }
+
+          // Fetch and analyze the content
+          const contentResponse = await fetch("/api/content/fetch", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ url: item.link }),
+          })
+
+          if (!contentResponse.ok) {
+            results.errors.push(`Failed to fetch content for: ${item.title}`)
+            continue
+          }
+
+          const { content, title } = await contentResponse.json()
+
+          // Analyze the content
+          const analysisResponse = await fetch("/api/grok/analyze", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ url: item.link, content, title }),
+          })
+
+          if (!analysisResponse.ok) {
+            results.errors.push(`Failed to analyze content for: ${item.title}`)
+            continue
+          }
+
+          const analysis = await analysisResponse.json()
+
+          // Store the analyzed content
+          await this.storeAnalyzedContent({
+            title: title || item.title,
+            url: item.link,
+            content: content || item.description,
+            source: "rss-archive",
+            analysis: {
+              summary: analysis.summary || {
+                sentence: item.description || `RSS item: ${item.title}`,
+                paragraph: content || item.description || "",
+                isFullRead: false,
+              },
+              entities: analysis.entities || [],
+              relationships: analysis.relationships || [],
+              tags: analysis.tags || ["rss", "archive"],
+              priority: analysis.priority || "read",
+              fullContent: content,
+              confidence: analysis.confidence || 0.7,
+            },
+          })
+
+          results.processed++
+          results.items.push({
+            title: title || item.title,
+            url: item.link,
+            processed: true,
+          })
+
+          // Add delay to avoid overwhelming the system
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+        } catch (error) {
+          console.error(`Error processing RSS item ${item.title}:`, error)
+          results.errors.push(
+            `Error processing ${item.title}: ${error instanceof Error ? error.message : "Unknown error"}`,
+          )
+        }
+      }
+
+      console.log(`RSS archive processing complete: ${results.processed} processed, ${results.errors.length} errors`)
+      return results
+    } catch (error) {
+      console.error("Error in processRSSHistoricalArchive:", error)
+      results.errors.push(error instanceof Error ? error.message : "Unknown error")
+      return results
     }
   }
 
