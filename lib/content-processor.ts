@@ -1,323 +1,278 @@
-import { databaseService } from "./database/database-service"
-
-interface ContentAnalysis {
+export interface ContentAnalysis {
   summary: {
     sentence: string
     paragraph: string
     isFullRead: boolean
   }
-  entities: Array<{
-    name: string
-    type: "concept" | "person" | "organization" | "technology" | "methodology"
-  }>
-  relationships: Array<{
-    from: string
-    to: string
-    type: "INCLUDES" | "RELATES_TO" | "IMPLEMENTS" | "USES" | "COMPETES_WITH"
-  }>
   tags: string[]
   priority: "skim" | "read" | "deep-dive"
   fullContent?: string
-  analyzedAt: string
+}
+
+export interface StoredContent {
+  id: string
+  url: string
+  title: string
+  content: string
+  analysis: ContentAnalysis
+  createdAt: string
   source: string
-  confidence?: number
+}
+
+export interface DigestItem {
+  title: string
+  summary: string
+  fullSummary?: string
+  summaryType: "paragraph" | "full-read"
+  priority: "skim" | "read" | "deep-dive"
+  url?: string
+  conceptTags: string[]
+  analyzedAt: string
+  fullContent?: string
+  source: string
+}
+
+export interface GeneratedDigest {
+  timeframe: "weekly" | "monthly" | "quarterly"
+  summary: string
+  items: DigestItem[]
+  trendingConcepts: Array<{
+    name: string
+    reason: string
+    importance: string
+  }>
+  stats: {
+    totalArticles: number
+    deepDiveCount: number
+    readCount: number
+    skimCount: number
+    analyzedArticles?: number
+  }
+  generatedAt: string
 }
 
 export class ContentProcessor {
-  static async analyzeContent(params: {
-    url?: string
-    content?: string
-    title?: string
-  }): Promise<ContentAnalysis> {
-    console.log("ContentProcessor.analyzeContent called with:", {
-      hasUrl: !!params.url,
-      hasContent: !!params.content,
-      hasTitle: !!params.title,
-      contentLength: params.content?.length,
-    })
+  private static readonly STORAGE_KEY = "pensive_content"
+  private static readonly MAX_STORED_ITEMS = 1000
 
+  // Store content in localStorage
+  static storeContent(content: StoredContent): void {
     try {
-      const response = await fetch("/api/grok/analyze", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(params),
-      })
-
-      console.log("Analysis API response status:", response.status)
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error("Analysis API error:", response.status, errorText)
-        throw new Error(`Analysis failed (${response.status}): ${errorText}`)
-      }
-
-      const rawAnalysis = await response.json()
-      console.log("Raw analysis result:", rawAnalysis)
-
-      // Handle the response structure correctly
-      let analysis: ContentAnalysis
-
-      if (rawAnalysis.error) {
-        throw new Error(rawAnalysis.error)
-      }
-
-      // The API now returns the analysis directly, not wrapped in an 'analysis' property
-      if (rawAnalysis.summary && rawAnalysis.entities) {
-        analysis = rawAnalysis
-      } else {
-        console.error("Invalid analysis structure:", rawAnalysis)
-        // Create fallback analysis
-        analysis = {
-          summary: {
-            sentence: `Analysis of "${params.title || "Content"}"`,
-            paragraph: params.content ? params.content.substring(0, 500) + "..." : "Content analysis summary",
-            isFullRead: false,
-          },
-          entities: [{ name: "General Content", type: "concept" }],
-          relationships: [],
-          tags: ["analysis", "content"],
-          priority: "read" as const,
-          fullContent: params.content,
-          confidence: 0.5,
-          source: params.url ? new URL(params.url).hostname : "manual",
-          analyzedAt: new Date().toISOString(),
-        }
-      }
-
-      console.log("Processed analysis:", analysis)
-
-      // Store the analyzed content in the database
-      if (params.url && params.content && params.title) {
-        console.log("Storing content in database...")
-        try {
-          const result = await databaseService.storeAnalyzedContent({
-            title: params.title,
-            url: params.url,
-            content: params.content,
-            source: analysis.source,
-            analysis: {
-              summary: analysis.summary,
-              entities: analysis.entities,
-              relationships: analysis.relationships,
-              tags: analysis.tags,
-              priority: analysis.priority,
-              fullContent: analysis.fullContent,
-              confidence: analysis.confidence || 0.8,
-            },
-          })
-          console.log("Content stored successfully:", result)
-        } catch (storageError) {
-          console.error("Error storing content in database:", storageError)
-          // Don't fail the analysis if storage fails, just log it
-        }
-      }
-
-      return analysis
+      const stored = this.getStoredContent({ limit: this.MAX_STORED_ITEMS - 1 })
+      const updated = [content, ...stored]
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(updated))
+      console.log("Content stored successfully:", content.title)
     } catch (error) {
-      console.error("ContentProcessor.analyzeContent error:", error)
-
-      // Return a fallback analysis instead of throwing
-      console.log("Returning fallback analysis due to error")
-      return {
-        summary: {
-          sentence: `Analysis of "${params.title || "Content"}" (Error occurred)`,
-          paragraph: "An error occurred during analysis. This is a fallback summary.",
-          isFullRead: false,
-        },
-        entities: [{ name: "Error Analysis", type: "concept" }],
-        relationships: [],
-        tags: ["error", "fallback"],
-        priority: "skim" as const,
-        fullContent: params.content,
-        confidence: 0.1,
-        source: params.url ? new URL(params.url).hostname : "error",
-        analyzedAt: new Date().toISOString(),
-      }
+      console.error("Error storing content:", error)
     }
   }
 
-  static async analyzeUrl(url: string): Promise<ContentAnalysis> {
-    console.log("ContentProcessor.analyzeUrl called with:", url)
-
-    try {
-      const contentResponse = await fetch(`/api/content/fetch`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ url }),
-      })
-
-      if (!contentResponse.ok) {
-        const errorText = await contentResponse.text()
-        console.error("Content fetch error:", contentResponse.status, errorText)
-        throw new Error("Failed to fetch content")
-      }
-
-      const { content, title } = await contentResponse.json()
-      console.log("Fetched content:", { title, contentLength: content?.length })
-
-      return this.analyzeContent({ url, content, title })
-    } catch (error) {
-      console.error("Error fetching content:", error)
-      throw error
-    }
-  }
-
-  static async generateDigest(timeframe: "weekly" | "monthly" | "quarterly", articles?: any[]) {
-    let digestItems = articles
-
-    // If no articles provided, get from database
-    if (!digestItems) {
-      const storedArticles = databaseService.getContentByTimeframe(timeframe)
-
-      if (storedArticles.length === 0) {
-        throw new Error(`No articles found for ${timeframe} digest`)
-      }
-
-      digestItems = storedArticles.map((article) => ({
-        title: article.title,
-        summary: article.analysis.summary.sentence,
-        fullSummary: article.analysis.summary.paragraph,
-        summaryType: article.analysis.summary.isFullRead ? ("full-read" as const) : ("paragraph" as const),
-        priority: article.analysis.priority,
-        url: article.url,
-        conceptTags: article.analysis.tags,
-        analyzedAt: article.createdAt,
-        fullContent: article.analysis.fullContent,
-        source: "analyzed",
-      }))
-    }
-
-    const response = await fetch("/api/digest/generate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        timeframe,
-        articles: digestItems,
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error("Failed to generate digest")
-    }
-
-    return response.json()
-  }
-
+  // Get stored content with filtering options
   static getStoredContent(
     options: {
       limit?: number
-      offset?: number
-      source?: string
-      priority?: string
       timeframe?: "weekly" | "monthly" | "quarterly"
-    } = {},
-  ) {
-    const result = databaseService.getStoredContent(options)
-    console.log("ContentProcessor.getStoredContent returning:", result.items.length, "items")
-    return result.items
-  }
-
-  static deleteContent(id: string): boolean {
-    console.log("ContentProcessor.deleteContent called with ID:", id)
-    const result = databaseService.deleteContent(id)
-    console.log("Delete result:", result)
-    return result
-  }
-
-  static searchContent(
-    query: string,
-    options: {
-      limit?: number
-      sources?: string[]
-      priorities?: string[]
-      dateRange?: { start: Date; end: Date }
-    } = {},
-  ) {
-    return databaseService.searchContent(query, options)
-  }
-
-  static getContentCount(): number {
-    const stats = databaseService.getDatabaseStats()
-    return stats.content.totalContent
-  }
-
-  static clearAllContent(): void {
-    console.log("ContentProcessor.clearAllContent called")
-    databaseService.clear()
-  }
-
-  // Database health and maintenance
-  static getDatabaseStats() {
-    return databaseService.getDatabaseStats()
-  }
-
-  static performMaintenance(): void {
-    console.log("Performing database maintenance...")
-    databaseService.vacuum()
-  }
-
-  static backupData(): string {
-    return databaseService.backup()
-  }
-
-  static restoreData(backup: string) {
-    return databaseService.restore(backup)
-  }
-
-  static exportData(format: "json" | "csv" = "json"): string {
-    return databaseService.exportData(format)
-  }
-
-  // Enhanced search with filters
-  static advancedSearch(
-    query: string,
-    filters: {
-      sources?: string[]
-      priorities?: string[]
-      dateRange?: { start: Date; end: Date }
       tags?: string[]
-      limit?: number
     } = {},
-  ) {
-    return databaseService.searchContent(query, {
-      limit: filters.limit || 20,
-      sources: filters.sources,
-      priorities: filters.priorities,
-      dateRange: filters.dateRange,
-    })
-  }
-
-  // Get analytics data
-  static getAnalytics() {
-    return databaseService.getDatabaseStats()
-  }
-
-  // Health check
-  static healthCheck() {
-    return databaseService.healthCheck()
-  }
-
-  // Legacy compatibility method (for test data)
-  static async addTestContent(testData: any): Promise<string> {
-    console.log("Adding test content via legacy method:", testData.title)
+  ): StoredContent[] {
     try {
-      const result = await databaseService.storeAnalyzedContent({
-        title: testData.title,
-        url: testData.url,
-        content: testData.content,
-        source: testData.source || "test-data",
-        analysis: testData.analysis,
-      })
-      return result.contentId
+      const stored = localStorage.getItem(this.STORAGE_KEY)
+      if (!stored) return []
+
+      let content: StoredContent[] = JSON.parse(stored)
+
+      // Apply timeframe filter
+      if (options.timeframe) {
+        const now = new Date()
+        const cutoff = new Date()
+
+        switch (options.timeframe) {
+          case "weekly":
+            cutoff.setDate(now.getDate() - 7)
+            break
+          case "monthly":
+            cutoff.setMonth(now.getMonth() - 1)
+            break
+          case "quarterly":
+            cutoff.setMonth(now.getMonth() - 3)
+            break
+        }
+
+        content = content.filter((item) => new Date(item.createdAt) >= cutoff)
+      }
+
+      // Apply tag filter
+      if (options.tags && options.tags.length > 0) {
+        content = content.filter((item) => options.tags!.some((tag) => item.analysis.tags.includes(tag)))
+      }
+
+      // Apply limit
+      if (options.limit) {
+        content = content.slice(0, options.limit)
+      }
+
+      return content
     } catch (error) {
-      console.error("Error adding test content:", error)
-      return "error"
+      console.error("Error retrieving stored content:", error)
+      return []
+    }
+  }
+
+  // Analyze URL content
+  static async analyzeUrl(url: string): Promise<ContentAnalysis> {
+    try {
+      console.log("Analyzing URL:", url)
+
+      // Fetch content
+      const response = await fetch("/api/content/fetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch content: ${response.statusText}`)
+      }
+
+      const { content, title } = await response.json()
+
+      // Analyze with Grok
+      const analysisResponse = await fetch("/api/grok/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, title, url }),
+      })
+
+      if (!analysisResponse.ok) {
+        throw new Error(`Analysis failed: ${analysisResponse.statusText}`)
+      }
+
+      const analysis = await analysisResponse.json()
+
+      // Store the analyzed content
+      const storedContent: StoredContent = {
+        id: Date.now().toString(),
+        url,
+        title: title || "Untitled",
+        content,
+        analysis,
+        createdAt: new Date().toISOString(),
+        source: "url-analysis",
+      }
+
+      this.storeContent(storedContent)
+
+      return analysis
+    } catch (error) {
+      console.error("Error analyzing URL:", error)
+
+      // Return fallback analysis
+      return {
+        summary: {
+          sentence: "Content analysis failed - please try again",
+          paragraph: "Unable to analyze this content at the moment. Please check the URL and try again.",
+          isFullRead: false,
+        },
+        tags: ["error", "failed-analysis"],
+        priority: "skim",
+      }
+    }
+  }
+
+  // Generate digest from content items
+  static async generateDigest(
+    timeframe: "weekly" | "monthly" | "quarterly",
+    items: DigestItem[],
+  ): Promise<GeneratedDigest> {
+    try {
+      console.log(`Generating ${timeframe} digest with ${items.length} items`)
+
+      const response = await fetch("/api/grok/digest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timeframe, items }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Digest generation failed: ${response.statusText}`)
+      }
+
+      const digest = await response.json()
+      return digest
+    } catch (error) {
+      console.error("Error generating digest:", error)
+
+      // Return fallback digest
+      return {
+        timeframe,
+        summary: `Unable to generate ${timeframe} digest at the moment. Please try again later.`,
+        items: items.slice(0, 10), // Show first 10 items as fallback
+        trendingConcepts: [],
+        stats: {
+          totalArticles: items.length,
+          deepDiveCount: items.filter((i) => i.priority === "deep-dive").length,
+          readCount: items.filter((i) => i.priority === "read").length,
+          skimCount: items.filter((i) => i.priority === "skim").length,
+          analyzedArticles: items.length,
+        },
+        generatedAt: new Date().toISOString(),
+      }
+    }
+  }
+
+  // Clear all stored content
+  static clearStoredContent(): void {
+    try {
+      localStorage.removeItem(this.STORAGE_KEY)
+      console.log("All stored content cleared")
+    } catch (error) {
+      console.error("Error clearing stored content:", error)
+    }
+  }
+
+  // Get content statistics
+  static getContentStats(): {
+    totalItems: number
+    byPriority: Record<string, number>
+    byTimeframe: Record<string, number>
+  } {
+    try {
+      const content = this.getStoredContent()
+      const now = new Date()
+
+      return {
+        totalItems: content.length,
+        byPriority: {
+          "deep-dive": content.filter((c) => c.analysis.priority === "deep-dive").length,
+          read: content.filter((c) => c.analysis.priority === "read").length,
+          skim: content.filter((c) => c.analysis.priority === "skim").length,
+        },
+        byTimeframe: {
+          "last-week": content.filter((c) => {
+            const created = new Date(c.createdAt)
+            const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+            return created >= weekAgo
+          }).length,
+          "last-month": content.filter((c) => {
+            const created = new Date(c.createdAt)
+            const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+            return created >= monthAgo
+          }).length,
+        },
+      }
+    } catch (error) {
+      console.error("Error getting content stats:", error)
+      return {
+        totalItems: 0,
+        byPriority: { "deep-dive": 0, read: 0, skim: 0 },
+        byTimeframe: { "last-week": 0, "last-month": 0 },
+      }
     }
   }
 }
+
+// Export individual functions for backward compatibility
+export const analyzeUrl = ContentProcessor.analyzeUrl.bind(ContentProcessor)
+export const generateDigest = ContentProcessor.generateDigest.bind(ContentProcessor)
+export const getStoredContent = ContentProcessor.getStoredContent.bind(ContentProcessor)
+export const storeContent = ContentProcessor.storeContent.bind(ContentProcessor)
