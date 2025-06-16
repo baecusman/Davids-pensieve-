@@ -293,18 +293,19 @@ export class DatabaseService {
       if (options.timeframe) {
         const cutoffDate = this.getTimeframeCutoff(options.timeframe)
         console.log(`Filtering by timeframe ${options.timeframe}, cutoff: ${cutoffDate.toISOString()}`)
+        console.log(`Total results before timeframe filter: ${results.length}`)
 
         const beforeFilter = results.length
         results = results.filter((r) => {
           const contentDate = new Date(r.content.createdAt)
           const isWithinTimeframe = contentDate >= cutoffDate
           console.log(
-            `Content ${r.content.title}: ${contentDate.toISOString()} >= ${cutoffDate.toISOString()} = ${isWithinTimeframe}`,
+            `Content "${r.content.title}": created ${contentDate.toISOString()}, cutoff ${cutoffDate.toISOString()}, included: ${isWithinTimeframe}`,
           )
           return isWithinTimeframe
         })
 
-        console.log(`Timeframe filter: ${beforeFilter} -> ${results.length} items`)
+        console.log(`Timeframe filter (${options.timeframe}): ${beforeFilter} -> ${results.length} items`)
       }
 
       const total = results.length
@@ -354,8 +355,8 @@ export class DatabaseService {
 
     switch (timeframe) {
       case "weekly":
-        // Make weekly more inclusive - last 10 days instead of 7
-        cutoffDate.setDate(now.getDate() - 10)
+        // Make weekly much more inclusive - last 30 days to catch recent content
+        cutoffDate.setDate(now.getDate() - 30)
         break
       case "monthly":
         cutoffDate.setMonth(now.getMonth() - 1)
