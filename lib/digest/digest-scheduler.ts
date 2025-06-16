@@ -12,13 +12,11 @@ interface DigestJob {
 }
 
 class DigestScheduler {
-  private static instance: DigestScheduler | null = null
+  private static instance: DigestScheduler
   private jobs: Map<string, DigestJob> = new Map()
   private interval: NodeJS.Timeout | null = null
   private storageKey = "pensive-digest-jobs"
   private isRunning = false
-  private isClient: boolean
-  private initialized = false
 
   static getInstance(): DigestScheduler {
     if (!DigestScheduler.instance) {
@@ -28,21 +26,11 @@ class DigestScheduler {
   }
 
   constructor() {
-    this.isClient = typeof window !== "undefined"
-    // Don't initialize anything in constructor to avoid SSR issues
-  }
-
-  private ensureInitialized(): void {
-    if (!this.initialized && this.isClient) {
-      this.loadJobs()
-      this.startScheduler()
-      this.initialized = true
-    }
+    this.loadJobs()
+    this.startScheduler()
   }
 
   private loadJobs(): void {
-    if (!this.isClient) return
-
     try {
       const stored = localStorage.getItem(this.storageKey)
       if (stored) {
@@ -58,8 +46,6 @@ class DigestScheduler {
   }
 
   private saveJobs(): void {
-    if (!this.isClient) return
-
     try {
       const jobsArray = Array.from(this.jobs.values())
       localStorage.setItem(this.storageKey, JSON.stringify(jobsArray))
@@ -69,7 +55,6 @@ class DigestScheduler {
   }
 
   private startScheduler(): void {
-    if (!this.isClient) return
     if (this.isRunning) return
 
     // Check every hour for pending digests
@@ -96,10 +81,6 @@ class DigestScheduler {
   }
 
   scheduleUserDigest(userId: string, email: string): boolean {
-    this.ensureInitialized()
-
-    if (!this.isClient) return false
-
     try {
       const user = simpleAuth.getAllUsers().find((u) => u.id === userId)
       if (!user) return false
@@ -126,10 +107,6 @@ class DigestScheduler {
   }
 
   unscheduleUserDigest(userId: string): boolean {
-    this.ensureInitialized()
-
-    if (!this.isClient) return false
-
     try {
       this.jobs.delete(userId)
       this.saveJobs()
@@ -185,8 +162,6 @@ class DigestScheduler {
   }
 
   private async processPendingDigests(): Promise<void> {
-    if (!this.isClient) return
-
     const now = new Date()
     const pendingJobs = Array.from(this.jobs.values()).filter(
       (job) => job.status === "pending" && new Date(job.scheduledFor) <= now,
@@ -364,22 +339,14 @@ class DigestScheduler {
 
   // Public methods for UI
   getUserDigestStatus(userId: string): DigestJob | null {
-    this.ensureInitialized()
-
-    if (!this.isClient) return null
     return this.jobs.get(userId) || null
   }
 
   getAllDigestJobs(): DigestJob[] {
-    this.ensureInitialized()
-
-    if (!this.isClient) return []
     return Array.from(this.jobs.values())
   }
 
   async sendTestDigest(userId: string, email: string): Promise<void> {
-    this.ensureInitialized()
-
     try {
       console.log(`Sending test digest to ${email}`)
 
@@ -400,17 +367,6 @@ class DigestScheduler {
 
   // Debug method to verify scheduling
   debugScheduling(): any {
-    this.ensureInitialized()
-
-    if (!this.isClient) {
-      return {
-        currentTime: { utc: "", et: "", dayOfWeek: 0 },
-        nextDigest: { utc: "", et: "", dayOfWeek: 0, hoursFromNow: 0 },
-        activeJobs: [],
-        schedulerStatus: { isRunning: false, totalJobs: 0 },
-      }
-    }
-
     const now = new Date()
     const etNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }))
     const nextMonday = this.getNextMondayAt4AM()
@@ -444,40 +400,13 @@ class DigestScheduler {
     }
   }
 
-  // Initialize method for client-side hydration
-  initialize(): void {
-    this.ensureInitialized()
-  }
-
   // Cleanup
   destroy(): void {
     this.stopScheduler()
   }
 }
 
-// Create a function that returns the instance instead of creating it immediately
-function getDigestSchedulerInstance(): DigestScheduler {
-  return DigestScheduler.getInstance()
-}
-
-// Export the singleton instance with all methods
-export const digestScheduler = {
-  scheduleUserDigest: (userId: string, email: string) => getDigestSchedulerInstance().scheduleUserDigest(userId, email),
-
-  unscheduleUserDigest: (userId: string) => getDigestSchedulerInstance().unscheduleUserDigest(userId),
-
-  getUserDigestStatus: (userId: string) => getDigestSchedulerInstance().getUserDigestStatus(userId),
-
-  getAllDigestJobs: () => getDigestSchedulerInstance().getAllDigestJobs(),
-
-  sendTestDigest: (userId: string, email: string) => getDigestSchedulerInstance().sendTestDigest(userId, email),
-
-  debugScheduling: () => getDigestSchedulerInstance().debugScheduling(),
-
-  initialize: () => getDigestSchedulerInstance().initialize(),
-
-  destroy: () => getDigestSchedulerInstance().destroy(),
-}
+export const digestScheduler = DigestScheduler.getInstance()
 
 // Cleanup on page unload
 if (typeof window !== "undefined") {

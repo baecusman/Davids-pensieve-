@@ -1,559 +1,944 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Badge } from "@/components/ui/badge"
-import { AlertCircle, CheckCircle, Clock, ExternalLink, Rss, Twitter, Mic, Globe } from "lucide-react"
-import { Alert, AlertDescription } from "@/components/ui/alert"
+import type React from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { ContentProcessor } from "@/lib/content-processor"
-import { databaseService } from "@/lib/database/database-service"
-
-interface Source {
-  id: string
-  url: string
-  title: string
-  type: "rss" | "twitter" | "podcast" | "article"
-  status: "active" | "processing" | "error"
-  lastUpdated: string
-  itemCount: number
-  summary?: string
-  tags?: string[]
-}
+import { rssProcessor } from "@/lib/rss-processor"
+import { twitterProcessor } from "@/lib/twitter-processor"
+import { podcastProcessor } from "@/lib/podcast-processor"
+import {
+  Trash2,
+  ExternalLink,
+  Calendar,
+  Tag,
+  Zap,
+  BookOpen,
+  Scan,
+  AlertCircle,
+  Rss,
+  Play,
+  Pause,
+  Clock,
+  CheckCircle,
+  XCircle,
+  Activity,
+  Twitter,
+  Headphones,
+  Loader2,
+} from "lucide-react"
 
 export default function SourceManagementView() {
-  const [url, setUrl] = useState("")
+  const [sourceUrl, setSourceUrl] = useState("")
   const [sourceType, setSourceType] = useState<"one-off" | "subscription">("one-off")
   const [subscriptionType, setSubscriptionType] = useState<"rss" | "twitter" | "podcast">("rss")
+  const [rssInterval, setRssInterval] = useState(60) // minutes
+  const [twitterHandle, setTwitterHandle] = useState("")
+  const [podcastType, setPodcastType] = useState<"episode" | "subscription">("episode")
   const [isProcessing, setIsProcessing] = useState(false)
-  const [sources, setSources] = useState<Source[]>([])
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
+  const [processingStatus, setProcessingStatus] = useState<string>("")
+  const [analysisResult, setAnalysisResult] = useState<any>(null)
+  const [storedSources, setStoredSources] = useState<any[]>([])
+  const [rssFeeds, setRssFeeds] = useState<any[]>([])
+  const [twitterFeeds, setTwitterFeeds] = useState<any[]>([])
+  const [podcastFeeds, setPodcastFeeds] = useState<any[]>([])
+  const [isDeleting, setIsDeleting] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<"sources" | "feeds" | "twitter" | "podcasts">("sources")
+  const [rssStatus, setRssStatus] = useState<any>({})
 
-  // RSS Archive Processing
-  const [rssArchiveUrl, setRssArchiveUrl] = useState("")
-  const [isProcessingArchive, setIsProcessingArchive] = useState(false)
-  const [archiveStatus, setArchiveStatus] = useState("")
-  const [archiveResults, setArchiveResults] = useState<any>(null)
+  // Memoized data loading for performance
+  const loadData = useCallback(() => {
+    try {
+      const sources = ContentProcessor.getStoredContent()
+      const feeds = rssProcessor.getFeeds()
+      const twitterAccounts = twitterProcessor.getAccounts()
+      const podcasts = podcastProcessor.getSubscriptions()
+      const status = rssProcessor.getProcessingStatus()
 
-  // Load existing sources on component mount
-  useEffect(() => {
-    loadStoredSources()
+      console.log(
+        "Loaded:",
+        sources.length,
+        "sources,",
+        feeds.length,
+        "feeds,",
+        twitterAccounts.length,
+        "twitter,",
+        podcasts.length,
+        "podcasts",
+      )
+
+      setStoredSources(sources)
+      setRssFeeds(feeds)
+      setTwitterFeeds(twitterAccounts)
+      setPodcastFeeds(podcasts)
+      setRssStatus(status)
+    } catch (error) {
+      console.error("Error loading data:", error)
+      setStoredSources([])
+      setRssFeeds([])
+      setTwitterFeeds([])
+      setPodcastFeeds([])
+    }
   }, [])
 
-  const loadStoredSources = () => {
-    try {
-      const storedContent = ContentProcessor.getStoredContent({ limit: 100 })
-      const formattedSources: Source[] = storedContent.map((content) => ({
-        id: content.id,
-        url: content.url,
-        title: content.title,
-        type: "article",
-        status: "active",
-        lastUpdated: content.createdAt,
-        itemCount: 1,
-        summary: content.analysis.summary.sentence,
-        tags: content.analysis.tags,
-      }))
-      setSources(formattedSources)
-    } catch (error) {
-      console.error("Error loading stored sources:", error)
-    }
-  }
+  // Debounced loading for performance
+  useEffect(() => {
+    const timeoutId = setTimeout(loadData, 100)
+    return () => clearTimeout(timeoutId)
+  }, [loadData])
 
-  const validateUrl = (url: string): boolean => {
-    try {
-      // More flexible URL validation
-      const urlPattern = /^https?:\/\/.+/i
-      return urlPattern.test(url.trim())
-    } catch {
-      return false
-    }
-  }
+  // Auto-refresh with longer intervals for performance
+  useEffect(() => {
+    const interval = setInterval(loadData, 60000) // 1 minute instead of 30 seconds
 
-  const handleAnalyze = async () => {
-    const trimmedUrl = url.trim()
-
-    if (!trimmedUrl) {
-      setMessage({ type: "error", text: "Please enter a URL" })
-      return
+    // Listen for updates
+    const handleUpdate = (event: any) => {
+      console.log("Update received:", event.detail)
+      loadData()
+      setProcessingStatus(`✅ Processed ${event.detail.newItemCount || 1} new items`)
+      setTimeout(() => setProcessingStatus(""), 5000)
     }
 
-    if (!validateUrl(trimmedUrl)) {
-      setMessage({ type: "error", text: "Please enter a valid URL (must start with http:// or https://)" })
-      return
+    if (typeof window !== "undefined") {
+      window.addEventListener("rss-update", handleUpdate)
+      window.addEventListener("twitter-update", handleUpdate)
+      window.addEventListener("podcast-update", handleUpdate)
     }
 
-    setIsProcessing(true)
-    setMessage(null)
+    return () => {
+      clearInterval(interval)
+      if (typeof window !== "undefined") {
+        window.removeEventListener("rss-update", handleUpdate)
+        window.removeEventListener("twitter-update", handleUpdate)
+        window.removeEventListener("podcast-update", handleUpdate)
+      }
+    }
+  }, [loadData])
 
-    try {
-      if (sourceType === "one-off") {
-        // One-off analysis using ContentProcessor
-        console.log("Starting one-off analysis for:", trimmedUrl)
-        const analysis = await ContentProcessor.analyzeUrl(trimmedUrl)
+  // Optimized submit handler
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault()
 
-        setMessage({ type: "success", text: `Successfully analyzed: ${analysis.summary?.sentence || "Content"}` })
-
-        // Add to local sources list
-        const newSource: Source = {
-          id: Date.now().toString(),
-          url: trimmedUrl,
-          title: analysis.summary?.sentence || "Analyzed Content",
-          type: "article",
-          status: "active",
-          lastUpdated: new Date().toISOString(),
-          itemCount: 1,
-          summary: analysis.summary?.sentence,
-          tags: analysis.tags,
-        }
-        setSources((prev) => [newSource, ...prev])
-      } else {
-        // Subscription - simplified approach
-        console.log("Starting subscription analysis for:", trimmedUrl, "type:", subscriptionType)
-
-        // For now, treat subscriptions as one-off analysis
-        // TODO: Implement proper subscription logic later
-        const analysis = await ContentProcessor.analyzeUrl(trimmedUrl)
-
-        setMessage({ type: "success", text: `Successfully added ${subscriptionType} source and analyzed content` })
-
-        // Add to sources list
-        const newSource: Source = {
-          id: Date.now().toString(),
-          url: trimmedUrl,
-          title: analysis.summary?.sentence || `${subscriptionType} Source`,
-          type: subscriptionType,
-          status: "active",
-          lastUpdated: new Date().toISOString(),
-          itemCount: 1,
-          summary: analysis.summary?.sentence,
-          tags: analysis.tags,
-        }
-        setSources((prev) => [newSource, ...prev])
+      if (!sourceUrl.trim()) {
+        setProcessingStatus("❌ Please enter a valid URL")
+        setTimeout(() => setProcessingStatus(""), 3000)
+        return
       }
 
-      setUrl("")
-    } catch (error) {
-      console.error("Processing error:", error)
-      const errorMessage = error instanceof Error ? error.message : "An error occurred while processing the URL"
-      setMessage({
-        type: "error",
-        text: errorMessage,
-      })
-    } finally {
-      setIsProcessing(false)
-    }
-  }
+      setIsProcessing(true)
+      setProcessingStatus("Starting analysis...")
+      setAnalysisResult(null)
 
-  const handleProcessRSSArchive = async () => {
-    if (!rssArchiveUrl.trim()) {
-      setMessage({ type: "error", text: "Please enter an RSS URL" })
-      return
-    }
+      try {
+        if (sourceType === "one-off") {
+          // Handle different URL types
+          if (sourceUrl.includes("spotify.com/episode") || sourceUrl.includes("podcasts.apple.com")) {
+            setProcessingStatus("🎧 Processing podcast episode...")
+            const analysis = await podcastProcessor.processEpisode(sourceUrl)
+            setProcessingStatus("✅ Podcast episode analyzed and stored!")
+            setAnalysisResult(analysis)
+          } else {
+            setProcessingStatus("🔍 Fetching content from URL...")
+            const analysis = await ContentProcessor.analyzeUrl(sourceUrl)
+            setProcessingStatus("✅ Analysis complete and stored in database!")
+            setAnalysisResult(analysis)
+          }
 
-    if (!validateUrl(rssArchiveUrl.trim())) {
-      setMessage({ type: "error", text: "Please enter a valid RSS URL" })
-      return
-    }
+          setTimeout(() => {
+            loadData()
+            setProcessingStatus("📚 Source added to library!")
+            setTimeout(() => setProcessingStatus(""), 3000)
+          }, 1000)
 
-    setIsProcessingArchive(true)
-    setArchiveStatus("Starting RSS archive processing...")
-    setArchiveResults(null)
+          setSourceUrl("")
+        } else {
+          // Handle subscriptions
+          switch (subscriptionType) {
+            case "rss":
+              setProcessingStatus("🔍 Testing RSS feed...")
+              const rssResult = await rssProcessor.addFeed(sourceUrl, rssInterval)
+              if (rssResult.success) {
+                setProcessingStatus(`✅ RSS feed added: ${rssResult.feed?.title}`)
+                loadData()
+                setSourceUrl("")
+              } else {
+                setProcessingStatus(`❌ Failed to add RSS feed: ${rssResult.error}`)
+              }
+              break
 
-    try {
-      const results = await databaseService.processRSSHistoricalArchive(rssArchiveUrl.trim(), 50)
+            case "twitter":
+              setProcessingStatus("🐦 Adding Twitter account...")
+              const twitterResult = await twitterProcessor.addAccount(twitterHandle || sourceUrl)
+              if (twitterResult.success) {
+                setProcessingStatus(`✅ Twitter account added: @${twitterResult.account?.handle}`)
+                loadData()
+                setTwitterHandle("")
+                setSourceUrl("")
+              } else {
+                setProcessingStatus(`❌ Failed to add Twitter account: ${twitterResult.error}`)
+              }
+              break
 
-      setArchiveStatus(
-        `✅ Archive processing complete! Processed ${results.processed} articles with ${results.errors.length} errors.`,
-      )
-      setArchiveResults(results)
+            case "podcast":
+              setProcessingStatus("🎧 Adding podcast subscription...")
+              const podcastResult = await podcastProcessor.addSubscription(sourceUrl)
+              if (podcastResult.success) {
+                setProcessingStatus(`✅ Podcast subscription added: ${podcastResult.podcast?.title}`)
+                loadData()
+                setSourceUrl("")
+              } else {
+                setProcessingStatus(`❌ Failed to add podcast: ${podcastResult.error}`)
+              }
+              break
+          }
+          setTimeout(() => setProcessingStatus(""), 5000)
+        }
+      } catch (error) {
+        console.error("Error processing source:", error)
+        setProcessingStatus("❌ Error: Failed to process content. Please try again.")
+        setTimeout(() => setProcessingStatus(""), 5000)
+      } finally {
+        setIsProcessing(false)
+      }
+    },
+    [sourceUrl, sourceType, subscriptionType, rssInterval, twitterHandle, podcastType],
+  )
 
-      // Refresh the sources list
-      loadStoredSources()
+  // Memoized handlers for performance
+  const handleDeleteSource = useCallback(
+    async (id: string, title: string) => {
+      if (!confirm(`Are you sure you want to remove "${title}"?`)) return
 
-      setTimeout(() => setArchiveStatus(""), 10000)
-    } catch (error) {
-      console.error("Error processing RSS archive:", error)
-      setArchiveStatus("❌ Error processing RSS archive. Please try again.")
-      setTimeout(() => setArchiveStatus(""), 5000)
-    } finally {
-      setIsProcessingArchive(false)
-    }
-  }
+      setIsDeleting(id)
+      try {
+        const success = ContentProcessor.deleteContent(id)
+        if (success) {
+          loadData()
+          setProcessingStatus(`✅ Removed "${title}"`)
+          setTimeout(() => setProcessingStatus(""), 3000)
+        } else {
+          setProcessingStatus(`❌ Failed to remove "${title}"`)
+          setTimeout(() => setProcessingStatus(""), 3000)
+        }
+      } catch (error) {
+        console.error("Error deleting source:", error)
+        setProcessingStatus(`❌ Error removing "${title}"`)
+        setTimeout(() => setProcessingStatus(""), 3000)
+      } finally {
+        setIsDeleting(null)
+      }
+    },
+    [loadData],
+  )
 
-  const getSourceIcon = (type: string) => {
-    switch (type) {
-      case "rss":
-        return <Rss className="h-4 w-4" />
-      case "twitter":
-        return <Twitter className="h-4 w-4" />
-      case "podcast":
-        return <Mic className="h-4 w-4" />
-      default:
-        return <Globe className="h-4 w-4" />
-    }
-  }
+  const handleToggleFeed = useCallback(
+    async (feedId: string, type: "rss" | "twitter" | "podcast") => {
+      try {
+        let isActive = false
+        switch (type) {
+          case "rss":
+            isActive = await rssProcessor.toggleFeed(feedId)
+            break
+          case "twitter":
+            isActive = await twitterProcessor.toggleAccount(feedId)
+            break
+          case "podcast":
+            isActive = await podcastProcessor.toggleSubscription(feedId)
+            break
+        }
+        loadData()
+        setProcessingStatus(`✅ ${type.toUpperCase()} feed ${isActive ? "activated" : "paused"}`)
+        setTimeout(() => setProcessingStatus(""), 3000)
+      } catch (error) {
+        console.error("Error toggling feed:", error)
+        setProcessingStatus("❌ Error updating feed")
+        setTimeout(() => setProcessingStatus(""), 3000)
+      }
+    },
+    [loadData],
+  )
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case "active":
-        return <CheckCircle className="h-4 w-4 text-green-500" />
-      case "processing":
-        return <Clock className="h-4 w-4 text-yellow-500" />
-      case "error":
-        return <AlertCircle className="h-4 w-4 text-red-500" />
-      default:
-        return <Clock className="h-4 w-4 text-gray-500" />
-    }
-  }
+  // Memoized utility functions
+  const getPriorityIcon = useMemo(
+    () => (priority: string) => {
+      switch (priority) {
+        case "deep-dive":
+          return <Zap className="h-4 w-4 text-purple-600" />
+        case "read":
+          return <BookOpen className="h-4 w-4 text-blue-600" />
+        case "skim":
+          return <Scan className="h-4 w-4 text-gray-500" />
+        default:
+          return <AlertCircle className="h-4 w-4 text-gray-400" />
+      }
+    },
+    [],
+  )
 
-  const rssSources = sources.filter((s) => s.type === "rss")
-  const twitterSources = sources.filter((s) => s.type === "twitter")
-  const podcastSources = sources.filter((s) => s.type === "podcast")
+  const getPriorityColor = useMemo(
+    () => (priority: string) => {
+      switch (priority) {
+        case "deep-dive":
+          return "bg-purple-100 text-purple-800 border-purple-200"
+        case "read":
+          return "bg-blue-100 text-blue-800 border-blue-200"
+        case "skim":
+          return "bg-gray-100 text-gray-800 border-gray-200"
+        default:
+          return "bg-gray-100 text-gray-600 border-gray-200"
+      }
+    },
+    [],
+  )
+
+  const formatInterval = useCallback((minutes: number) => {
+    if (minutes < 60) return `${minutes}m`
+    const hours = Math.floor(minutes / 60)
+    const remainingMinutes = minutes % 60
+    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
+  }, [])
 
   return (
-    <div className="space-y-6">
-      {/* Add Content Source */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Add Content Source</CardTitle>
-          <CardDescription>Add a URL for one-time analysis or subscribe to ongoing content feeds</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="url">Source URL</Label>
-            <Input
-              id="url"
-              type="url"
-              placeholder="https://example.com/article"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
+    <div className="max-w-4xl mx-auto px-4 py-8">
+      {/* Add Source Form */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6 md:p-8 mb-8">
+        <h2 className="text-xl md:text-2xl font-bold text-gray-900 mb-6 md:mb-8">Add Content Source</h2>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* URL Input */}
+          <div>
+            <label htmlFor="sourceUrl" className="block text-sm font-medium text-gray-700 mb-2">
+              {subscriptionType === "twitter"
+                ? "Twitter Handle or URL"
+                : subscriptionType === "podcast"
+                  ? "Podcast URL (Spotify/Apple)"
+                  : "Source URL"}
+            </label>
+            <input
+              type={subscriptionType === "twitter" ? "text" : "url"}
+              id="sourceUrl"
+              value={sourceUrl}
+              onChange={(e) => setSourceUrl(e.target.value)}
+              placeholder={
+                subscriptionType === "twitter"
+                  ? "@username or https://twitter.com/username"
+                  : subscriptionType === "podcast"
+                    ? "https://open.spotify.com/episode/... or https://podcasts.apple.com/..."
+                    : sourceType === "one-off"
+                      ? "https://example.com/article"
+                      : "https://example.com/feed.xml"
+              }
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-base md:text-lg"
+              required
               disabled={isProcessing}
             />
           </div>
 
-          <div className="space-y-3">
-            <Label>Source Type</Label>
-            <RadioGroup
-              value={sourceType}
-              onValueChange={(value: "one-off" | "subscription") => setSourceType(value)}
-              disabled={isProcessing}
-            >
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="one-off" id="one-off" />
-                <Label htmlFor="one-off">One-off Analysis</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="subscription" id="subscription" />
-                <Label htmlFor="subscription">Subscription</Label>
-              </div>
-            </RadioGroup>
-
-            {sourceType === "subscription" && (
-              <div className="ml-6 space-y-2">
-                <Label>Subscription Type</Label>
-                <RadioGroup
-                  value={subscriptionType}
-                  onValueChange={(value: "rss" | "twitter" | "podcast") => setSubscriptionType(value)}
+          {/* Source Type Selection */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3">Source Type</label>
+            <div className="flex flex-wrap gap-4">
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  name="sourceType"
+                  value="one-off"
+                  checked={sourceType === "one-off"}
+                  onChange={(e) => setSourceType(e.target.value as "one-off" | "subscription")}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
                   disabled={isProcessing}
-                >
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="rss" id="rss" />
-                    <Label htmlFor="rss">RSS Feed</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="twitter" id="twitter" />
-                    <Label htmlFor="twitter">Twitter Profile</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="podcast" id="podcast" />
-                    <Label htmlFor="podcast">Podcast Feed</Label>
-                  </div>
-                </RadioGroup>
-              </div>
-            )}
+                />
+                <span className="ml-2 text-sm text-gray-700 font-medium">One-off Analysis</span>
+              </label>
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  name="sourceType"
+                  value="subscription"
+                  checked={sourceType === "subscription"}
+                  onChange={(e) => setSourceType(e.target.value as "one-off" | "subscription")}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                  disabled={isProcessing}
+                />
+                <span className="ml-2 text-sm text-gray-700">Subscription</span>
+              </label>
+            </div>
           </div>
 
-          {message && (
-            <Alert variant={message.type === "error" ? "destructive" : "default"}>
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>{message.text}</AlertDescription>
-            </Alert>
-          )}
-
-          <Button onClick={handleAnalyze} disabled={isProcessing || !url.trim()} className="w-full">
-            {isProcessing ? "Processing..." : sourceType === "one-off" ? "Analyze" : "Add Subscription"}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* RSS Historical Archive Processing */}
-      <Card>
-        <CardHeader>
-          <CardTitle>RSS Historical Archive Processing</CardTitle>
-          <CardDescription>Process historical articles from RSS feeds in bulk</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="rss-archive-url">RSS Feed URL</Label>
-            <Input
-              id="rss-archive-url"
-              type="url"
-              placeholder="https://example.com/rss.xml"
-              value={rssArchiveUrl}
-              onChange={(e) => setRssArchiveUrl(e.target.value)}
-              disabled={isProcessingArchive}
-            />
-          </div>
-
-          <Button
-            onClick={handleProcessRSSArchive}
-            disabled={isProcessingArchive || !rssArchiveUrl.trim()}
-            className="w-full"
-          >
-            {isProcessingArchive ? "Processing Archive..." : "Process RSS Archive"}
-          </Button>
-
-          {archiveStatus && (
-            <Alert variant={archiveStatus.includes("❌") ? "destructive" : "default"}>
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>{archiveStatus}</AlertDescription>
-            </Alert>
-          )}
-
-          {archiveResults && (
-            <div className="bg-gray-50 rounded-lg p-4">
-              <h4 className="font-medium text-gray-900 mb-2">Archive Processing Results</h4>
-              <div className="grid grid-cols-3 gap-4 text-sm">
-                <div>
-                  <span className="text-gray-600">Processed:</span>
-                  <span className="ml-2 font-medium text-green-600">{archiveResults.processed}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Errors:</span>
-                  <span className="ml-2 font-medium text-red-600">{archiveResults.errors.length}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Total Items:</span>
-                  <span className="ml-2 font-medium text-blue-600">{archiveResults.items.length}</span>
+          {/* Subscription Details */}
+          {sourceType === "subscription" && (
+            <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-3">Subscription Type</label>
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="subscriptionType"
+                      value="rss"
+                      checked={subscriptionType === "rss"}
+                      onChange={(e) => setSubscriptionType(e.target.value as "rss" | "twitter" | "podcast")}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                      disabled={isProcessing}
+                    />
+                    <Rss className="h-4 w-4 ml-2 mr-1 text-orange-500" />
+                    <span className="text-sm text-gray-700">RSS Feed</span>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="subscriptionType"
+                      value="twitter"
+                      checked={subscriptionType === "twitter"}
+                      onChange={(e) => setSubscriptionType(e.target.value as "rss" | "twitter" | "podcast")}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                      disabled={isProcessing}
+                    />
+                    <Twitter className="h-4 w-4 ml-2 mr-1 text-blue-500" />
+                    <span className="text-sm text-gray-700">Twitter</span>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="subscriptionType"
+                      value="podcast"
+                      checked={subscriptionType === "podcast"}
+                      onChange={(e) => setSubscriptionType(e.target.value as "rss" | "twitter" | "podcast")}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                      disabled={isProcessing}
+                    />
+                    <Headphones className="h-4 w-4 ml-2 mr-1 text-purple-500" />
+                    <span className="text-sm text-gray-700">Podcast</span>
+                  </label>
                 </div>
               </div>
 
-              {archiveResults.errors.length > 0 && (
-                <div className="mt-3">
-                  <details className="cursor-pointer">
-                    <summary className="text-sm font-medium text-gray-700">View Errors</summary>
-                    <div className="mt-2 space-y-1">
-                      {archiveResults.errors.slice(0, 5).map((error: string, index: number) => (
-                        <p key={index} className="text-xs text-red-600">
-                          {error}
-                        </p>
-                      ))}
-                      {archiveResults.errors.length > 5 && (
-                        <p className="text-xs text-gray-500">... and {archiveResults.errors.length - 5} more</p>
-                      )}
-                    </div>
-                  </details>
+              {subscriptionType === "rss" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Check Interval: {formatInterval(rssInterval)}
+                  </label>
+                  <input
+                    type="range"
+                    min="15"
+                    max="1440"
+                    step="15"
+                    value={rssInterval}
+                    onChange={(e) => setRssInterval(Number(e.target.value))}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                    disabled={isProcessing}
+                  />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>15min</span>
+                    <span>24h</span>
+                  </div>
+                </div>
+              )}
+
+              {subscriptionType === "podcast" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-3">Podcast Type</label>
+                  <div className="flex gap-4">
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name="podcastType"
+                        value="episode"
+                        checked={podcastType === "episode"}
+                        onChange={(e) => setPodcastType(e.target.value as "episode" | "subscription")}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                        disabled={isProcessing}
+                      />
+                      <span className="ml-2 text-sm text-gray-700">Single Episode</span>
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name="podcastType"
+                        value="subscription"
+                        checked={podcastType === "subscription"}
+                        onChange={(e) => setPodcastType(e.target.value as "episode" | "subscription")}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300"
+                        disabled={isProcessing}
+                      />
+                      <span className="ml-2 text-sm text-gray-700">Subscribe to Show</span>
+                    </label>
+                  </div>
                 </div>
               )}
             </div>
           )}
 
-          <div className="text-xs text-gray-500">
-            <p>• Processes up to 50 historical articles from the RSS feed</p>
-            <p>• Automatically analyzes and adds to your knowledge base</p>
-            <p>• Skips articles already in your database</p>
+          {/* Action Buttons */}
+          <div className="flex gap-3">
+            <button
+              type="submit"
+              disabled={isProcessing || !sourceUrl.trim()}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2"
+            >
+              {isProcessing && <Loader2 className="h-4 w-4 animate-spin" />}
+              {isProcessing
+                ? "Processing..."
+                : sourceType === "one-off"
+                  ? "Analyze"
+                  : `Add ${subscriptionType.charAt(0).toUpperCase() + subscriptionType.slice(1)}`}
+            </button>
           </div>
-        </CardContent>
-      </Card>
+        </form>
 
-      {/* Sources Tabs */}
-      <Tabs defaultValue="sources" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="sources">Sources ({sources.length})</TabsTrigger>
-          <TabsTrigger value="rss">RSS ({rssSources.length})</TabsTrigger>
-          <TabsTrigger value="twitter">Twitter ({twitterSources.length})</TabsTrigger>
-          <TabsTrigger value="podcasts">Podcasts ({podcastSources.length})</TabsTrigger>
-        </TabsList>
+        {/* Processing Status */}
+        {processingStatus && (
+          <div
+            className={`mt-6 p-4 rounded-lg border ${
+              processingStatus.includes("❌")
+                ? "bg-red-50 border-red-200"
+                : processingStatus.includes("✅")
+                  ? "bg-green-50 border-green-200"
+                  : processingStatus.includes("⚠️")
+                    ? "bg-amber-50 border-amber-200"
+                    : "bg-blue-50 border-blue-200"
+            }`}
+          >
+            <p
+              className={`text-sm ${
+                processingStatus.includes("❌")
+                  ? "text-red-800"
+                  : processingStatus.includes("✅")
+                    ? "text-green-800"
+                    : processingStatus.includes("⚠️")
+                      ? "text-amber-800"
+                      : "text-blue-800"
+              }`}
+            >
+              {processingStatus}
+            </p>
+          </div>
+        )}
 
-        <TabsContent value="sources" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Analyzed Sources ({sources.length})</CardTitle>
-              {sources.length > 0 && (
-                <Button variant="outline" size="sm" onClick={loadStoredSources} className="w-fit">
-                  Refresh
-                </Button>
-              )}
-            </CardHeader>
-            <CardContent>
-              {sources.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <AlertCircle className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                  <p>No sources analyzed yet</p>
-                  <p className="text-sm">Add a URL above to get started</p>
+        {/* Analysis Result */}
+        {analysisResult && (
+          <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+            <h3 className="font-medium text-green-900 mb-2">🎉 Analysis Complete!</h3>
+            <div className="text-sm text-green-800 space-y-2">
+              <p>
+                <strong>Summary:</strong> {analysisResult.summary.sentence}
+              </p>
+              <p>
+                <strong>Priority:</strong> <span className="capitalize">{analysisResult.priority}</span>
+              </p>
+              <p>
+                <strong>Tags:</strong> {analysisResult.tags.join(", ")}
+              </p>
+              <p className="text-xs text-green-600">✅ Stored in database with full concept mapping</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Status Bar */}
+      {(rssStatus.activeFeeds > 0 || twitterFeeds.length > 0 || podcastFeeds.length > 0) && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+          <div className="flex items-center gap-2 text-blue-800">
+            <Activity className="h-4 w-4" />
+            <span className="text-sm font-medium">
+              Active: {rssStatus.activeFeeds || 0} RSS • {twitterFeeds.filter((f) => f.isActive).length} Twitter •{" "}
+              {podcastFeeds.filter((f) => f.isActive).length} Podcasts
+              {rssStatus.processingUrls > 0 && ` • ${rssStatus.processingUrls} analyzing now`}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <div className="border-b border-gray-200">
+          <div className="flex overflow-x-auto">
+            {[
+              { id: "sources", label: "Sources", count: storedSources.length },
+              { id: "feeds", label: "RSS", count: rssFeeds.length, icon: Rss },
+              { id: "twitter", label: "Twitter", count: twitterFeeds.length, icon: Twitter },
+              { id: "podcasts", label: "Podcasts", count: podcastFeeds.length, icon: Headphones },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`flex items-center gap-2 px-4 md:px-6 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                  activeTab === tab.id
+                    ? "border-blue-500 text-blue-600 bg-blue-50"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {tab.icon && <tab.icon className="h-4 w-4" />}
+                {tab.label} ({tab.count})
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-4 md:p-8">
+          {/* Sources Tab */}
+          {activeTab === "sources" && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg md:text-xl font-semibold text-gray-900">
+                  Analyzed Sources ({storedSources.length})
+                </h3>
+              </div>
+
+              {storedSources.length === 0 ? (
+                <div className="text-center py-12">
+                  <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h4 className="text-lg font-medium text-gray-900 mb-2">No sources analyzed yet</h4>
+                  <p className="text-gray-600 mb-4">Add your first source using the form above.</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {sources.map((source) => (
-                    <div key={source.id} className="flex items-start justify-between p-4 border rounded-lg">
-                      <div className="flex items-start gap-3 flex-1">
-                        {getSourceIcon(source.type)}
-                        <div className="flex-1">
-                          <p className="font-medium">{source.title}</p>
-                          <p className="text-sm text-gray-500 mb-2">{source.url}</p>
-                          {source.summary && <p className="text-sm text-gray-700 mb-2">{source.summary}</p>}
-                          {source.tags && source.tags.length > 0 && (
-                            <div className="flex flex-wrap gap-1">
-                              {source.tags.slice(0, 3).map((tag, index) => (
-                                <Badge key={index} variant="outline" className="text-xs">
-                                  {tag}
-                                </Badge>
-                              ))}
-                              {source.tags.length > 3 && (
-                                <Badge variant="outline" className="text-xs">
-                                  +{source.tags.length - 3} more
-                                </Badge>
-                              )}
+                <div className="space-y-4">
+                  {storedSources.map((source) => (
+                    <div
+                      key={source.id}
+                      className="border border-gray-200 rounded-lg p-4 md:p-6 hover:shadow-sm transition-shadow"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-2">
+                            <h4 className="font-medium text-gray-900 truncate">{source.title}</h4>
+                            <a
+                              href={source.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                              title="Open original article"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </div>
+                          <p className="text-sm text-gray-600 mb-3 line-clamp-2">
+                            {source.analysis?.summary?.sentence || "No summary available"}
+                          </p>
+                          <div className="flex items-center gap-4 text-xs text-gray-500">
+                            <div className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              {new Date(source.createdAt).toLocaleDateString()}
+                            </div>
+                            {source.analysis?.tags && source.analysis.tags.length > 0 && (
+                              <div className="flex items-center gap-1">
+                                <Tag className="h-3 w-3" />
+                                {source.analysis.tags.slice(0, 2).join(", ")}
+                                {source.analysis.tags.length > 2 && ` +${source.analysis.tags.length - 2}`}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 ml-4">
+                          {source.analysis?.priority && (
+                            <div
+                              className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${getPriorityColor(source.analysis.priority)}`}
+                            >
+                              {getPriorityIcon(source.analysis.priority)}
+                              <span className="capitalize">{source.analysis.priority}</span>
                             </div>
                           )}
+                          <button
+                            onClick={() => handleDeleteSource(source.id, source.title)}
+                            disabled={isDeleting === source.id}
+                            className="p-2 text-gray-400 hover:text-red-600 transition-colors disabled:opacity-50"
+                            title="Remove source"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge variant="secondary">{source.type}</Badge>
-                        {getStatusIcon(source.status)}
-                        <Button variant="ghost" size="sm" asChild>
-                          <a href={source.url} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </div>
+          )}
 
-        <TabsContent value="rss">
-          <Card>
-            <CardHeader>
-              <CardTitle>RSS Feeds ({rssSources.length})</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {rssSources.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <Rss className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                  <p>No RSS feeds added yet</p>
+          {/* RSS Feeds Tab */}
+          {activeTab === "feeds" && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg md:text-xl font-semibold text-gray-900">RSS Feeds ({rssFeeds.length})</h3>
+              </div>
+
+              {rssFeeds.length === 0 ? (
+                <div className="text-center py-12">
+                  <Rss className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h4 className="text-lg font-medium text-gray-900 mb-2">No RSS feeds added yet</h4>
+                  <p className="text-gray-600 mb-4">Add your first RSS feed using the form above.</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {rssSources.map((source) => (
-                    <div key={source.id} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <Rss className="h-4 w-4" />
-                        <div>
-                          <p className="font-medium">{source.title}</p>
-                          <p className="text-sm text-gray-500">{source.itemCount} items</p>
+                <div className="space-y-4">
+                  {rssFeeds.map((feed) => (
+                    <div
+                      key={feed.id}
+                      className="border border-gray-200 rounded-lg p-4 md:p-6 hover:shadow-sm transition-shadow"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Rss className="h-4 w-4 text-orange-500 flex-shrink-0" />
+                            <h4 className="font-medium text-gray-900 truncate">{feed.title}</h4>
+                            <a
+                              href={feed.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                              title="Open RSS feed"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </div>
+
+                          {feed.description && (
+                            <p className="text-sm text-gray-600 mb-3 line-clamp-2">{feed.description}</p>
+                          )}
+
+                          <div className="flex items-center gap-4 text-xs text-gray-500 mb-2">
+                            <div className="flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              Every {formatInterval(feed.fetchInterval)}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              Last: {new Date(feed.lastFetched).toLocaleDateString()}
+                            </div>
+                            <div>{feed.itemCount} items processed</div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {feed.isActive ? (
+                              <div className="flex items-center gap-1 text-green-600">
+                                <CheckCircle className="h-3 w-3" />
+                                <span className="text-xs">Active</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 text-gray-500">
+                                <Pause className="h-3 w-3" />
+                                <span className="text-xs">Paused</span>
+                              </div>
+                            )}
+
+                            {feed.errorCount > 0 && (
+                              <div className="flex items-center gap-1 text-red-600">
+                                <XCircle className="h-3 w-3" />
+                                <span className="text-xs">{feed.errorCount} errors</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {getStatusIcon(source.status)}
-                        <Button variant="ghost" size="sm" asChild>
-                          <a href={source.url} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
+
+                        <div className="flex items-center gap-2 ml-4">
+                          <button
+                            onClick={() => handleToggleFeed(feed.id, "rss")}
+                            className={`p-2 rounded-lg transition-colors ${
+                              feed.isActive ? "text-orange-600 hover:bg-orange-50" : "text-green-600 hover:bg-green-50"
+                            }`}
+                            title={feed.isActive ? "Pause feed" : "Resume feed"}
+                          >
+                            {feed.isActive ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                          </button>
+
+                          <button
+                            onClick={() => rssProcessor.removeFeed(feed.id)}
+                            className="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                            title="Remove feed"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </div>
+          )}
 
-        <TabsContent value="twitter">
-          <Card>
-            <CardHeader>
-              <CardTitle>Twitter Sources ({twitterSources.length})</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {twitterSources.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <Twitter className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                  <p>No Twitter sources added yet</p>
+          {/* Twitter Tab */}
+          {activeTab === "twitter" && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg md:text-xl font-semibold text-gray-900">
+                  Twitter Accounts ({twitterFeeds.length})
+                </h3>
+              </div>
+
+              {twitterFeeds.length === 0 ? (
+                <div className="text-center py-12">
+                  <Twitter className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h4 className="text-lg font-medium text-gray-900 mb-2">No Twitter accounts added yet</h4>
+                  <p className="text-gray-600 mb-4">Add your first Twitter account using the form above.</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {twitterSources.map((source) => (
-                    <div key={source.id} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <Twitter className="h-4 w-4" />
-                        <div>
-                          <p className="font-medium">{source.title}</p>
-                          <p className="text-sm text-gray-500">{source.itemCount} items</p>
+                <div className="space-y-4">
+                  {twitterFeeds.map((account) => (
+                    <div
+                      key={account.id}
+                      className="border border-gray-200 rounded-lg p-4 md:p-6 hover:shadow-sm transition-shadow"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Twitter className="h-4 w-4 text-blue-500 flex-shrink-0" />
+                            <h4 className="font-medium text-gray-900">@{account.handle}</h4>
+                            <a
+                              href={`https://twitter.com/${account.handle}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                              title="Open Twitter profile"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </div>
+
+                          <div className="flex items-center gap-4 text-xs text-gray-500 mb-2">
+                            <div className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              Added: {new Date(account.createdAt).toLocaleDateString()}
+                            </div>
+                            <div>{account.tweetCount || 0} tweets processed</div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {account.isActive ? (
+                              <div className="flex items-center gap-1 text-green-600">
+                                <CheckCircle className="h-3 w-3" />
+                                <span className="text-xs">Active</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 text-gray-500">
+                                <Pause className="h-3 w-3" />
+                                <span className="text-xs">Paused</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {getStatusIcon(source.status)}
-                        <Button variant="ghost" size="sm" asChild>
-                          <a href={source.url} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
+
+                        <div className="flex items-center gap-2 ml-4">
+                          <button
+                            onClick={() => handleToggleFeed(account.id, "twitter")}
+                            className={`p-2 rounded-lg transition-colors ${
+                              account.isActive ? "text-blue-600 hover:bg-blue-50" : "text-green-600 hover:bg-green-50"
+                            }`}
+                            title={account.isActive ? "Pause monitoring" : "Resume monitoring"}
+                          >
+                            {account.isActive ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                          </button>
+
+                          <button
+                            onClick={() => twitterProcessor.removeAccount(account.id)}
+                            className="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                            title="Remove account"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </div>
+          )}
 
-        <TabsContent value="podcasts">
-          <Card>
-            <CardHeader>
-              <CardTitle>Podcasts ({podcastSources.length})</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {podcastSources.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <Mic className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                  <p>No podcasts added yet</p>
+          {/* Podcasts Tab */}
+          {activeTab === "podcasts" && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg md:text-xl font-semibold text-gray-900">
+                  Podcast Subscriptions ({podcastFeeds.length})
+                </h3>
+              </div>
+
+              {podcastFeeds.length === 0 ? (
+                <div className="text-center py-12">
+                  <Headphones className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+                  <h4 className="text-lg font-medium text-gray-900 mb-2">No podcast subscriptions yet</h4>
+                  <p className="text-gray-600 mb-4">Add your first podcast using the form above.</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {podcastSources.map((source) => (
-                    <div key={source.id} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <Mic className="h-4 w-4" />
-                        <div>
-                          <p className="font-medium">{source.title}</p>
-                          <p className="text-sm text-gray-500">{source.itemCount} items</p>
+                <div className="space-y-4">
+                  {podcastFeeds.map((podcast) => (
+                    <div
+                      key={podcast.id}
+                      className="border border-gray-200 rounded-lg p-4 md:p-6 hover:shadow-sm transition-shadow"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Headphones className="h-4 w-4 text-purple-500 flex-shrink-0" />
+                            <h4 className="font-medium text-gray-900 truncate">{podcast.title}</h4>
+                            <a
+                              href={podcast.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                              title="Open podcast"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </div>
+
+                          {podcast.description && (
+                            <p className="text-sm text-gray-600 mb-3 line-clamp-2">{podcast.description}</p>
+                          )}
+
+                          <div className="flex items-center gap-4 text-xs text-gray-500 mb-2">
+                            <div className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              Added: {new Date(podcast.createdAt).toLocaleDateString()}
+                            </div>
+                            <div>{podcast.episodeCount || 0} episodes processed</div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {podcast.isActive ? (
+                              <div className="flex items-center gap-1 text-green-600">
+                                <CheckCircle className="h-3 w-3" />
+                                <span className="text-xs">Active</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 text-gray-500">
+                                <Pause className="h-3 w-3" />
+                                <span className="text-xs">Paused</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {getStatusIcon(source.status)}
-                        <Button variant="ghost" size="sm" asChild>
-                          <a href={source.url} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
+
+                        <div className="flex items-center gap-2 ml-4">
+                          <button
+                            onClick={() => handleToggleFeed(podcast.id, "podcast")}
+                            className={`p-2 rounded-lg transition-colors ${
+                              podcast.isActive
+                                ? "text-purple-600 hover:bg-purple-50"
+                                : "text-green-600 hover:bg-green-50"
+                            }`}
+                            title={podcast.isActive ? "Pause subscription" : "Resume subscription"}
+                          >
+                            {podcast.isActive ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                          </button>
+
+                          <button
+                            onClick={() => podcastProcessor.removeSubscription(podcast.id)}
+                            className="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                            title="Remove subscription"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

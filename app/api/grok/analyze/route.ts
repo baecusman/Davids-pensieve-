@@ -2,179 +2,143 @@ import { type NextRequest, NextResponse } from "next/server"
 
 export async function POST(request: NextRequest) {
   try {
-    const { url, content, title } = await request.json()
+    const { content, title, url } = await request.json()
 
-    console.log("Grok analyze API called with:", { hasUrl: !!url, hasContent: !!content, hasTitle: !!title })
+    if (!content || !title) {
+      return NextResponse.json({ error: "Content and title are required" }, { status: 400 })
+    }
 
-    // Enhanced analysis based on URL patterns and content
-    const analysis = generateEnhancedAnalysis(url, content, title)
+    // Check if XAI_API_KEY is available
+    const apiKey = process.env.XAI_API_KEY
+    if (!apiKey) {
+      console.warn("XAI_API_KEY not found, using mock analysis")
 
-    console.log("Generated analysis:", analysis)
+      // Return mock analysis when API key is not available
+      const mockAnalysis = {
+        summary: {
+          sentence: `Analysis of "${title}" - ${content.substring(0, 100)}...`,
+          paragraph: `This content discusses various topics and concepts. The analysis provides insights into the main themes and relationships between different ideas presented in the material.`,
+          isFullRead: false,
+        },
+        entities: [
+          { name: "Technology", type: "concept" },
+          { name: "Innovation", type: "concept" },
+          { name: "Analysis", type: "concept" },
+        ],
+        relationships: [
+          { from: "Technology", to: "Innovation", type: "ENABLES" },
+          { from: "Innovation", to: "Analysis", type: "REQUIRES" },
+        ],
+        tags: ["technology", "analysis", "concepts"],
+        priority: "read" as const,
+      }
 
-    return NextResponse.json(analysis)
+      return NextResponse.json({ analysis: mockAnalysis })
+    }
+
+    // Make request to Grok API
+    const response = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert content analyzer. Analyze the given content and return a JSON response with the following structure:
+            {
+              "summary": {
+                "sentence": "One sentence summary",
+                "paragraph": "Detailed paragraph summary",
+                "isFullRead": false
+              },
+              "entities": [{"name": "Entity Name", "type": "concept|person|organization|location"}],
+              "relationships": [{"from": "Entity1", "to": "Entity2", "type": "RELATIONSHIP_TYPE"}],
+              "tags": ["tag1", "tag2", "tag3"],
+              "priority": "deep-dive|read|skim"
+            }`,
+          },
+          {
+            role: "user",
+            content: `Title: ${title}\n\nContent: ${content}\n\nURL: ${url || "N/A"}`,
+          },
+        ],
+        model: "grok-beta",
+        temperature: 0.3,
+        max_tokens: 2000,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error("Grok API error:", response.status, errorText)
+
+      // Fall back to mock analysis on API error
+      const mockAnalysis = {
+        summary: {
+          sentence: `Analysis of "${title}" - API temporarily unavailable`,
+          paragraph: `This content has been processed with a fallback analyzer. The main themes and concepts have been identified for inclusion in your knowledge base.`,
+          isFullRead: false,
+        },
+        entities: [
+          { name: "Content Analysis", type: "concept" },
+          { name: "Knowledge Management", type: "concept" },
+        ],
+        relationships: [{ from: "Content Analysis", to: "Knowledge Management", type: "SUPPORTS" }],
+        tags: ["analysis", "content", "fallback"],
+        priority: "read" as const,
+      }
+
+      return NextResponse.json({ analysis: mockAnalysis })
+    }
+
+    const data = await response.json()
+
+    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+      throw new Error("Invalid response format from Grok API")
+    }
+
+    const analysisText = data.choices[0].message.content
+
+    try {
+      const analysis = JSON.parse(analysisText)
+      return NextResponse.json({ analysis })
+    } catch (parseError) {
+      console.error("Error parsing Grok response:", parseError)
+
+      // Extract key information manually if JSON parsing fails
+      const fallbackAnalysis = {
+        summary: {
+          sentence: `Analysis of "${title}"`,
+          paragraph: analysisText.substring(0, 500) + "...",
+          isFullRead: false,
+        },
+        entities: [{ name: "Content", type: "concept" }],
+        relationships: [],
+        tags: ["analyzed", "content"],
+        priority: "read" as const,
+      }
+
+      return NextResponse.json({ analysis: fallbackAnalysis })
+    }
   } catch (error) {
-    console.error("Error in grok analyze API:", error)
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Analysis failed" }, { status: 500 })
-  }
-}
+    console.error("Analysis error:", error)
 
-function generateEnhancedAnalysis(url?: string, content?: string, title?: string) {
-  const hostname = url ? new URL(url).hostname.toLowerCase() : ""
-  const pathname = url ? new URL(url).pathname.toLowerCase() : ""
+    // Always return a valid response, even on error
+    const errorAnalysis = {
+      summary: {
+        sentence: "Content analysis temporarily unavailable",
+        paragraph: "The content has been saved but could not be fully analyzed at this time. Please try again later.",
+        isFullRead: false,
+      },
+      entities: [],
+      relationships: [],
+      tags: ["error", "retry-needed"],
+      priority: "read" as const,
+    }
 
-  // Generate rich, domain-specific analysis
-  let entities: Array<{ name: string; type: string }> = []
-  let tags: string[] = []
-  let priority: "skim" | "read" | "deep-dive" = "read"
-  let relationships: Array<{ from: string; to: string; type: string }> = []
-
-  // Netflix Tech Blog Analysis
-  if (hostname.includes("netflixtechblog") || (hostname.includes("netflix") && pathname.includes("uda"))) {
-    entities = [
-      { name: "Unified Data Architecture", type: "technology" },
-      { name: "Netflix", type: "organization" },
-      { name: "Data Engineering", type: "methodology" },
-      { name: "Microservices", type: "technology" },
-      { name: "Stream Processing", type: "technology" },
-      { name: "Data Mesh", type: "methodology" },
-      { name: "Real-time Analytics", type: "technology" },
-      { name: "Distributed Systems", type: "technology" },
-      { name: "Data Governance", type: "methodology" },
-      { name: "Scalable Storage", type: "technology" },
-      { name: "Event-driven Architecture", type: "methodology" },
-      { name: "Data Quality", type: "methodology" },
-    ]
-    tags = [
-      "data-architecture",
-      "netflix",
-      "microservices",
-      "streaming",
-      "distributed-systems",
-      "data-engineering",
-      "scalability",
-      "real-time",
-      "data-mesh",
-      "governance",
-      "event-driven",
-      "analytics",
-    ]
-    priority = "deep-dive"
-    relationships = [
-      { from: "Unified Data Architecture", to: "Data Engineering", type: "IMPLEMENTS" },
-      { from: "Netflix", to: "Microservices", type: "USES" },
-      { from: "Data Mesh", to: "Distributed Systems", type: "RELATES_TO" },
-      { from: "Stream Processing", to: "Real-time Analytics", type: "ENABLES" },
-    ]
-  }
-  // Lenny's Newsletter Analysis
-  else if (hostname.includes("lenny") || title?.toLowerCase().includes("lenny")) {
-    entities = [
-      { name: "Product Management", type: "methodology" },
-      { name: "Growth Strategy", type: "methodology" },
-      { name: "User Experience", type: "methodology" },
-      { name: "Product-Market Fit", type: "concept" },
-      { name: "Customer Development", type: "methodology" },
-      { name: "Business Model", type: "concept" },
-      { name: "User Research", type: "methodology" },
-      { name: "Product Leadership", type: "concept" },
-      { name: "Monetization", type: "concept" },
-      { name: "Growth Loops", type: "methodology" },
-      { name: "Data-Driven Decisions", type: "methodology" },
-      { name: "Customer Empathy", type: "concept" },
-    ]
-    tags = [
-      "product-management",
-      "growth",
-      "strategy",
-      "user-experience",
-      "product-market-fit",
-      "leadership",
-      "monetization",
-      "customer-development",
-      "business-model",
-      "user-research",
-      "data-driven",
-      "empathy",
-    ]
-    priority = "read"
-    relationships = [
-      { from: "Product Management", to: "Growth Strategy", type: "INCLUDES" },
-      { from: "User Research", to: "Customer Development", type: "RELATES_TO" },
-      { from: "Product-Market Fit", to: "Business Model", type: "INFLUENCES" },
-    ]
-  }
-  // Stratechery Analysis
-  else if (hostname.includes("stratechery")) {
-    entities = [
-      { name: "Business Strategy", type: "methodology" },
-      { name: "Platform Economics", type: "concept" },
-      { name: "Network Effects", type: "concept" },
-      { name: "Competitive Advantage", type: "concept" },
-      { name: "Digital Transformation", type: "methodology" },
-      { name: "Technology Trends", type: "concept" },
-      { name: "Market Dynamics", type: "concept" },
-      { name: "Subscription Models", type: "concept" },
-      { name: "Regulatory Impact", type: "concept" },
-      { name: "Strategic Analysis", type: "methodology" },
-      { name: "Industry Evolution", type: "concept" },
-      { name: "Innovation Strategy", type: "methodology" },
-    ]
-    tags = [
-      "strategy",
-      "platform-economics",
-      "network-effects",
-      "competitive-advantage",
-      "digital-transformation",
-      "market-analysis",
-      "subscription-models",
-      "regulation",
-      "innovation",
-      "industry-trends",
-      "strategic-thinking",
-      "business-models",
-    ]
-    priority = "deep-dive"
-    relationships = [
-      { from: "Platform Economics", to: "Network Effects", type: "INCLUDES" },
-      { from: "Business Strategy", to: "Competitive Advantage", type: "CREATES" },
-      { from: "Digital Transformation", to: "Technology Trends", type: "FOLLOWS" },
-    ]
-  }
-  // Generic Tech/Business Content
-  else {
-    entities = [
-      { name: "Technology", type: "concept" },
-      { name: "Business Strategy", type: "methodology" },
-      { name: "Innovation", type: "concept" },
-      { name: "Digital Solutions", type: "technology" },
-      { name: "Market Analysis", type: "methodology" },
-      { name: "Industry Insights", type: "concept" },
-      { name: "Professional Development", type: "concept" },
-      { name: "Best Practices", type: "methodology" },
-    ]
-    tags = ["technology", "business", "strategy", "innovation", "analysis", "insights", "development", "practices"]
-    priority = "read"
-    relationships = [
-      { from: "Technology", to: "Innovation", type: "ENABLES" },
-      { from: "Business Strategy", to: "Market Analysis", type: "INCLUDES" },
-    ]
-  }
-
-  return {
-    summary: {
-      sentence: title || `Analysis of content from ${hostname}`,
-      paragraph: content
-        ? content.substring(0, 500) + "..."
-        : `Comprehensive analysis covering key concepts and insights from ${hostname}`,
-      isFullRead: false,
-    },
-    entities,
-    relationships,
-    tags,
-    priority,
-    fullContent: content,
-    confidence: 0.9,
-    source: hostname || "unknown",
-    analyzedAt: new Date().toISOString(),
+    return NextResponse.json({ analysis: errorAnalysis })
   }
 }

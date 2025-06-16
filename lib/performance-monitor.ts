@@ -18,8 +18,6 @@ class PerformanceMonitor {
     lastUpdated: new Date().toISOString(),
   }
   private observers: Map<string, PerformanceObserver> = new Map()
-  private timers: Map<string, number> = new Map()
-  private errors = 0
 
   static getInstance(): PerformanceMonitor {
     if (!PerformanceMonitor.instance) {
@@ -64,15 +62,11 @@ class PerformanceMonitor {
     }
   }
 
-  startTimer(name: string): () => void {
-    const startTime = performance.now()
-    this.timers.set(name, startTime)
-
+  startTimer(operation: string): () => void {
+    const start = performance.now()
     return () => {
-      const endTime = performance.now()
-      const duration = endTime - startTime
-      console.log(`Performance: ${name} took ${duration.toFixed(2)}ms`)
-      this.timers.delete(name)
+      const duration = performance.now() - start
+      this.recordOperation(operation, duration)
     }
   }
 
@@ -92,9 +86,7 @@ class PerformanceMonitor {
   }
 
   recordError(): void {
-    this.errors++
     this.metrics.errorCount++
-    console.log(`Performance: Total errors recorded: ${this.errors}`)
   }
 
   getMetrics(): PerformanceMetrics {
@@ -104,17 +96,10 @@ class PerformanceMonitor {
     return { ...this.metrics }
   }
 
-  getStats() {
-    return {
-      activeTimers: this.timers.size,
-      totalErrors: this.errors,
-    }
-  }
-
   cleanup(): void {
     this.observers.forEach((observer) => observer.disconnect())
     this.observers.clear()
   }
 }
 
-export const performanceMonitor = new PerformanceMonitor()
+export const performanceMonitor = PerformanceMonitor.getInstance()

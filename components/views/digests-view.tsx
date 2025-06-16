@@ -1,215 +1,308 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Button } from "@/components/ui/button"
-import { Calendar, TrendingUp, FileText, Clock } from "lucide-react"
+import { useState, useEffect, useCallback, useMemo } from "react"
+import DigestContentItem from "../digest-content-item"
+import FullReadModal from "../full-read-modal"
+import LoadingSkeleton from "../loading-skeleton"
 import { ContentProcessor } from "@/lib/content-processor"
+import { performanceMonitor } from "@/lib/performance-monitor"
+import { cacheManager } from "@/lib/cache-manager"
+import ErrorBoundary from "../error-boundary"
 
 export default function DigestsView() {
-  const [activeTab, setActiveTab] = useState("weekly")
+  const [activeDigestType, setActiveDigestType] = useState<"weekly" | "monthly" | "quarterly">("weekly")
+  const [selectedFullRead, setSelectedFullRead] = useState<{
+    title: string
+    content: string
+    url?: string
+  } | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [generationStatus, setGenerationStatus] = useState("")
   const [generatedDigest, setGeneratedDigest] = useState<any>(null)
+  const [realContentCount, setRealContentCount] = useState(0)
+  const [isLoading, setIsLoading] = useState(true)
+  const [storedContent, setStoredContent] = useState<any[]>([])
 
-  const stats = ContentProcessor.getContentStats()
+  // Memoized content loading with caching
+  const loadContentData = useCallback(async () => {
+    const cacheKey = `digest-content:${activeDigestType}`
 
-  const handleGenerateDigest = async (timeframe: "weekly" | "monthly" | "quarterly") => {
-    setIsGenerating(true)
+    // Check cache first
+    const cached = cacheManager.get<{ content: any[]; count: number }>(cacheKey)
+    if (cached) {
+      setStoredContent(cached.content)
+      setRealContentCount(cached.count)
+      setIsLoading(false)
+      return
+    }
+
+    const timer = performanceMonitor.startTimer("db-query")
+
     try {
-      // Mock digest generation for now
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-
-      setGeneratedDigest({
-        timeframe,
-        summary: `Your ${timeframe} digest has been generated with ${stats.totalItems} articles analyzed.`,
-        items: [],
-        trendingConcepts: [
-          { name: "AI Technology", reason: "Mentioned in 5 articles", importance: "High" },
-          { name: "Product Strategy", reason: "Key theme this period", importance: "Medium" },
-        ],
-        stats: {
-          totalArticles: stats.totalItems,
-          deepDiveCount: stats.byPriority["deep-dive"],
-          readCount: stats.byPriority.read,
-          skimCount: stats.byPriority.skim,
-        },
-        generatedAt: new Date().toISOString(),
+      const result = ContentProcessor.getStoredContent({
+        limit: 100,
+        timeframe: activeDigestType,
       })
+
+      const content = Array.isArray(result) ? result : result.items || []
+      const count = Array.isArray(result) ? result.length : result.total || 0
+
+      setStoredContent(content)
+      setRealContentCount(count)
+
+      // Cache for 5 minutes
+      cacheManager.set(cacheKey, { content, count }, 5 * 60 * 1000)
+    } catch (error) {
+      console.error("Error loading content data:", error)
+      performanceMonitor.recordError()
+      setStoredContent([])
+      setRealContentCount(0)
+    } finally {
+      setIsLoading(false)
+      timer()
+    }
+  }, [activeDigestType])
+
+  // Debounced loading
+  useEffect(() => {
+    const timeoutId = setTimeout(loadContentData, 100)
+    return () => clearTimeout(timeoutId)
+  }, [loadContentData])
+
+  // Memoized event handlers
+  const handleTagClick = useCallback((tag: string) => {
+    console.log("Tag clicked:", tag)
+    // TODO: Filter concept map or highlight related concepts
+  }, [])
+
+  const handleFullReadClick = useCallback((item: any) => {
+    setSelectedFullRead({
+      title: item.title,
+      content: item.fullContent || item.content || "Full content would be loaded here...",
+      url: item.url,
+    })
+  }, [])
+
+  // Optimized digest generation
+  const handleGenerate = useCallback(async () => {
+    if (isGenerating) return
+
+    setIsGenerating(true)
+    setGenerationStatus("Gathering content from database...")
+
+    const timer = performanceMonitor.startTimer("api-call")
+
+    try {
+      if (storedContent.length === 0) {
+        setGenerationStatus("No analyzed content found. Please add some sources and analyze content first.")
+        setTimeout(() => setGenerationStatus(""), 5000)
+        return
+      }
+
+      setGenerationStatus(`Found ${storedContent.length} analyzed articles in database...`)
+
+      // Convert stored content to digest format
+      const digestItems = storedContent.map((article) => ({
+        title: article.title,
+        summary: article.analysis?.summary?.sentence || article.summary || "No summary available",
+        fullSummary: article.analysis?.summary?.paragraph || article.fullSummary || "",
+        summaryType: article.analysis?.summary?.isFullRead ? ("full-read" as const) : ("paragraph" as const),
+        priority: article.analysis?.priority || article.priority || "read",
+        url: article.url,
+        conceptTags: article.analysis?.tags || article.conceptTags || [],
+        analyzedAt: article.createdAt || article.analyzedAt || new Date().toISOString(),
+        fullContent: article.analysis?.fullContent || article.fullContent || "",
+        source: "analyzed",
+      }))
+
+      setGenerationStatus(`Generating ${activeDigestType} digest with ${digestItems.length} articles using Grok...`)
+
+      const digest = await ContentProcessor.generateDigest(activeDigestType, digestItems)
+
+      setGenerationStatus(`✅ Generated comprehensive digest with ${digest.items.length} articles!`)
+      setGeneratedDigest(digest)
+
+      // Cache the generated digest
+      cacheManager.set(`generated-digest:${activeDigestType}`, digest, 30 * 60 * 1000) // 30 minutes
+
+      console.log("Generated comprehensive digest:", digest)
+
+      setTimeout(() => setGenerationStatus(""), 5000)
     } catch (error) {
       console.error("Error generating digest:", error)
+      performanceMonitor.recordError()
+      setGenerationStatus("❌ Error generating digest. Please try again.")
+      setTimeout(() => setGenerationStatus(""), 3000)
     } finally {
       setIsGenerating(false)
+      timer()
     }
+  }, [isGenerating, storedContent, activeDigestType])
+
+  // Memoized content items for performance
+  const contentItems = useMemo(() => {
+    return storedContent
+      .slice(0, 10)
+      .map((item, index) => (
+        <DigestContentItem
+          key={`${item.id}-${index}`}
+          title={item.title}
+          summary={item.analysis?.summary?.sentence || item.summary || "No summary available"}
+          fullSummary={item.analysis?.summary?.paragraph || item.fullSummary}
+          summaryType={item.analysis?.summary?.isFullRead ? "full-read" : "paragraph"}
+          priority={item.analysis?.priority || item.priority || "read"}
+          isNew={false}
+          url={item.url}
+          conceptTags={item.analysis?.tags || item.conceptTags || []}
+          onTagClick={handleTagClick}
+          onFullReadClick={() => handleFullReadClick(item)}
+        />
+      ))
+  }, [storedContent, handleTagClick, handleFullReadClick])
+
+  if (isLoading) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        <LoadingSkeleton />
+      </div>
+    )
   }
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Content Digests</h1>
-        <p className="text-gray-600">AI-powered summaries of your analyzed content</p>
-      </div>
+    <ErrorBoundary>
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        {/* Navigation with Generate button */}
+        <div className="flex items-center gap-2 mb-8">
+          <button
+            onClick={handleGenerate}
+            disabled={isGenerating || storedContent.length === 0}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 hover:shadow-lg transform hover:scale-105 whitespace-nowrap disabled:transform-none disabled:shadow-none"
+          >
+            {isGenerating ? "Generating..." : "Generate"}
+          </button>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
-              <FileText className="h-4 w-4" />
-              Total Articles
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-blue-600">{stats.totalItems}</div>
-          </CardContent>
-        </Card>
+          <div style={{ width: "5px" }} />
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
-              <TrendingUp className="h-4 w-4" />
-              Deep Dives
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-purple-600">{stats.byPriority["deep-dive"]}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
-              <Clock className="h-4 w-4" />
-              Read Priority
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-600">{stats.byPriority.read}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
-              <Calendar className="h-4 w-4" />
-              Skim Items
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-gray-600">{stats.byPriority.skim}</div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Digest Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="weekly">Weekly</TabsTrigger>
-          <TabsTrigger value="monthly">Monthly</TabsTrigger>
-          <TabsTrigger value="quarterly">Quarterly</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="weekly" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Weekly Digest</CardTitle>
-              <CardDescription>Your content summary for the past week</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button
-                onClick={() => handleGenerateDigest("weekly")}
-                disabled={isGenerating || stats.totalItems === 0}
-                className="w-full"
+          <div className="flex bg-gray-100 rounded-lg p-1 flex-1">
+            {(["weekly", "monthly", "quarterly"] as const).map((type) => (
+              <button
+                key={type}
+                onClick={() => setActiveDigestType(type)}
+                className={`flex-1 px-4 py-2 rounded-md text-sm font-medium capitalize transition-all duration-200 ${
+                  activeDigestType === type ? "bg-white text-gray-900 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                }`}
               >
-                {isGenerating ? "Generating..." : "Generate Weekly Digest"}
-              </Button>
+                {type}
+              </button>
+            ))}
+          </div>
+        </div>
 
-              {generatedDigest && generatedDigest.timeframe === "weekly" && (
-                <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-                  <h4 className="font-medium text-green-900 mb-2">Weekly Digest Generated!</h4>
-                  <p className="text-sm text-green-800">{generatedDigest.summary}</p>
+        {/* Generation Status */}
+        {generationStatus && (
+          <div
+            className={`mb-6 p-3 rounded-lg border ${
+              generationStatus.includes("❌")
+                ? "bg-red-50 border-red-200 text-red-800"
+                : generationStatus.includes("✅")
+                  ? "bg-green-50 border-green-200 text-green-800"
+                  : "bg-blue-50 border-blue-200 text-blue-800"
+            }`}
+          >
+            <p className="text-sm">{generationStatus}</p>
+          </div>
+        )}
 
-                  {generatedDigest.trendingConcepts.length > 0 && (
-                    <div className="mt-3">
-                      <h5 className="font-medium text-green-900 mb-1">Trending Concepts:</h5>
-                      <div className="space-y-1">
-                        {generatedDigest.trendingConcepts.map((concept: any, index: number) => (
-                          <div key={index} className="text-xs text-green-700">
-                            <strong>{concept.name}</strong> - {concept.reason}
-                          </div>
-                        ))}
-                      </div>
+        {/* Generated Digest Summary */}
+        {generatedDigest && (
+          <div className="mb-8 p-6 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                🤖 AI-Generated {generatedDigest.timeframe.charAt(0).toUpperCase() + generatedDigest.timeframe.slice(1)}{" "}
+                Digest
+              </h3>
+              <span className="text-xs text-gray-500">
+                Generated {new Date(generatedDigest.generatedAt).toLocaleString()}
+              </span>
+            </div>
+
+            <div className="prose prose-sm max-w-none mb-4">
+              <p className="text-gray-700 leading-relaxed">{generatedDigest.summary}</p>
+            </div>
+
+            {/* Trending Concepts */}
+            {generatedDigest.trendingConcepts && generatedDigest.trendingConcepts.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-sm font-medium text-gray-900 mb-2">🔥 Trending Concepts</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {generatedDigest.trendingConcepts.slice(0, 4).map((concept: any, index: number) => (
+                    <div key={index} className="bg-white p-3 rounded border border-blue-100">
+                      <h5 className="font-medium text-blue-900 text-sm">{concept.name}</h5>
+                      <p className="text-xs text-gray-600 mt-1">{concept.reason}</p>
+                      <p className="text-xs text-blue-700 mt-1 font-medium">{concept.importance}</p>
                     </div>
-                  )}
+                  ))}
                 </div>
+              </div>
+            )}
+
+            {/* Stats */}
+            <div className="flex flex-wrap gap-4 text-xs text-gray-600">
+              <span>📊 {generatedDigest.stats.totalArticles} total articles</span>
+              <span>🎯 {generatedDigest.stats.deepDiveCount} deep-dive</span>
+              <span>📖 {generatedDigest.stats.readCount} read</span>
+              <span>👁️ {generatedDigest.stats.skimCount} skim</span>
+              {generatedDigest.stats.analyzedArticles && (
+                <span className="text-blue-600">🔍 {generatedDigest.stats.analyzedArticles} from your content</span>
               )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+            </div>
+          </div>
+        )}
 
-        <TabsContent value="monthly" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Monthly Digest</CardTitle>
-              <CardDescription>Your content summary for the past month</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button
-                onClick={() => handleGenerateDigest("monthly")}
-                disabled={isGenerating || stats.totalItems === 0}
-                className="w-full"
-              >
-                {isGenerating ? "Generating..." : "Generate Monthly Digest"}
-              </Button>
+        {/* Content Status */}
+        {realContentCount > 0 ? (
+          <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+            <div className="flex items-center gap-2 text-green-800">
+              <div className="w-2 h-2 bg-green-600 rounded-full"></div>
+              <span className="text-sm font-medium">
+                You have {realContentCount} analyzed articles ready for digest generation.
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+            <div className="flex items-center gap-2 text-amber-800">
+              <div className="w-2 h-2 bg-amber-600 rounded-full"></div>
+              <span className="text-sm font-medium">
+                No analyzed content found. Add some sources in Source Management and analyze content to generate
+                personalized digests.
+              </span>
+            </div>
+          </div>
+        )}
 
-              {generatedDigest && generatedDigest.timeframe === "monthly" && (
-                <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                  <h4 className="font-medium text-blue-900 mb-2">Monthly Digest Generated!</h4>
-                  <p className="text-sm text-blue-800">{generatedDigest.summary}</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+        {/* Real Content Display */}
+        {storedContent.length > 0 && (
+          <div className="space-y-6">
+            <h3 className="text-lg font-semibold text-gray-900">Your Analyzed Content</h3>
+            <div className="space-y-2">{contentItems}</div>
+            {storedContent.length > 10 && (
+              <p className="text-sm text-gray-600 text-center">
+                Showing first 10 of {storedContent.length} analyzed articles
+              </p>
+            )}
+          </div>
+        )}
 
-        <TabsContent value="quarterly" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Quarterly Digest</CardTitle>
-              <CardDescription>Your content summary for the past quarter</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button
-                onClick={() => handleGenerateDigest("quarterly")}
-                disabled={isGenerating || stats.totalItems === 0}
-                className="w-full"
-              >
-                {isGenerating ? "Generating..." : "Generate Quarterly Digest"}
-              </Button>
-
-              {generatedDigest && generatedDigest.timeframe === "quarterly" && (
-                <div className="mt-4 p-4 bg-purple-50 border border-purple-200 rounded-lg">
-                  <h4 className="font-medium text-purple-900 mb-2">Quarterly Digest Generated!</h4>
-                  <p className="text-sm text-purple-800">{generatedDigest.summary}</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-
-      {stats.totalItems === 0 && (
-        <Card className="mt-8">
-          <CardContent className="text-center py-8">
-            <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No Content Yet</h3>
-            <p className="text-gray-600 mb-4">Add some content through Source Management to generate digests</p>
-            <Button variant="outline" onClick={() => window.location.reload()}>
-              Go to Source Management
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-    </div>
+        {/* Full Read Modal */}
+        <FullReadModal
+          isOpen={!!selectedFullRead}
+          onClose={() => setSelectedFullRead(null)}
+          title={selectedFullRead?.title || ""}
+          content={selectedFullRead?.content || ""}
+          url={selectedFullRead?.url}
+        />
+      </div>
+    </ErrorBoundary>
   )
 }

@@ -20,10 +20,13 @@ import {
   HardDrive,
   Zap,
   Mail,
+  Cloud,
   Calendar,
 } from "lucide-react"
 import { databaseService } from "@/lib/database/database-service"
 import { emailScheduler } from "@/lib/email-scheduler"
+import DriveExport from "@/components/google-drive/drive-export"
+import { googleAuth } from "@/lib/auth/google-auth"
 import { digestScheduler } from "@/lib/digest/digest-scheduler"
 import { simpleAuth } from "@/lib/auth/simple-auth"
 
@@ -63,7 +66,7 @@ export default function SettingsView() {
   const [isVacuuming, setIsVacuuming] = useState(false)
   const [status, setStatus] = useState("")
   const [activeTab, setActiveTab] = useState<
-    "overview" | "data" | "preferences" | "performance" | "maintenance" | "email"
+    "overview" | "data" | "preferences" | "performance" | "maintenance" | "email" | "drive"
   >("overview")
 
   const [digestEmail, setDigestEmail] = useState("")
@@ -87,7 +90,7 @@ export default function SettingsView() {
       setDatabaseStats(stats)
 
       // Load settings from localStorage with defaults
-      const storedSettings = typeof window !== "undefined" ? localStorage.getItem("pensive-settings-v2") : null
+      const storedSettings = localStorage.getItem("pensive-settings-v2")
       const defaultSettings: AppSettings = {
         version: "2.0.0",
         preferences: {
@@ -154,9 +157,7 @@ export default function SettingsView() {
 
   const saveSettings = (newSettings: AppSettings) => {
     try {
-      if (typeof window !== "undefined") {
-        localStorage.setItem("pensive-settings-v2", JSON.stringify(newSettings))
-      }
+      localStorage.setItem("pensive-settings-v2", JSON.stringify(newSettings))
       setSettings(newSettings)
 
       // Update email scheduler if email settings changed
@@ -468,6 +469,7 @@ export default function SettingsView() {
               { id: "email", label: "Email", icon: Mail },
               { id: "performance", label: "Performance", icon: Zap },
               { id: "maintenance", label: "Maintenance", icon: HardDrive },
+              { id: "drive", label: "Google Drive", icon: Cloud },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -1001,6 +1003,22 @@ export default function SettingsView() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === "drive" && (
+            <div className="space-y-6">
+              <h3 className="text-xl font-semibold">Google Drive Integration</h3>
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                <div className="flex items-center gap-2 mb-2">
+                  <Cloud className="h-5 w-5 text-blue-600" />
+                  <span className="font-medium text-blue-900">Connected Account</span>
+                </div>
+                <div className="text-sm text-blue-800">{googleAuth.getCurrentUser()?.email}</div>
+              </div>
+
+              <DriveExport />
             </div>
           )}
         </div>
