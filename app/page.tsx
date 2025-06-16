@@ -20,6 +20,9 @@ export default function Home() {
   useEffect(() => {
     const timer = performanceMonitor.startTimer("auth-check")
 
+    // Initialize auth system first
+    simpleAuth.initialize()
+
     if (simpleAuth.isAuthenticated()) {
       const user = simpleAuth.getCurrentUser()
       if (user) {
