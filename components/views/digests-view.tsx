@@ -1,33 +1,17 @@
-"use client"
-
 import type React from "react"
-import { useEffect } from "react"
-import { ContentProcessor } from "../../utils/content-processor"
+import type { Digest } from "@/lib/database/database-service"
+import DigestItem from "@/components/digest-item"
 
-const DigestsView: React.FC = () => {
-  useEffect(() => {
-    // Debug: Log content availability for different timeframes
-    console.log("=== DIGEST DEBUG INFO ===")
-    const weeklyContent = ContentProcessor.getStoredContent({ timeframe: "weekly" })
-    const monthlyContent = ContentProcessor.getStoredContent({ timeframe: "monthly" })
-    const allContent = ContentProcessor.getStoredContent({})
+interface DigestsViewProps {
+  digests: Digest[]
+}
 
-    console.log("Weekly content:", weeklyContent.length)
-    console.log("Monthly content:", monthlyContent.length)
-    console.log("All content:", allContent.length)
-
-    if (allContent.length > 0) {
-      console.log("Sample content dates:")
-      allContent.slice(0, 3).forEach((item) => {
-        console.log(`- "${item.title}": ${item.createdAt}`)
-      })
-    }
-  }, [])
-
+const DigestsView: React.FC<DigestsViewProps> = ({ digests }) => {
   return (
     <div>
-      <h1>Digests View</h1>
-      {/* Add digest display logic here */}
+      {digests.map((digest) => (
+        <DigestItem key={digest.id} digest={digest} />
+      ))}
     </div>
   )
 }
