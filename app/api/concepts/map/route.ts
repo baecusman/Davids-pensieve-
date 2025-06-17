@@ -1,17 +1,17 @@
 import type { NextRequest } from "next/server"
-import { supabaseContentService } from "@/lib/services/supabase-content-service"
+import { createAuthenticatedHandler } from "@/lib/auth/auth-utils"
+import { contentService } from "@/lib/services/content-service"
 
-export async function GET(request: NextRequest) {
+export const GET = createAuthenticatedHandler(async (request: NextRequest, user) => {
   try {
     const { searchParams } = new URL(request.url)
-    const abstractionLevel = parseInt(searchParams.get("abstractionLevel") || "50")
+
+    const abstractionLevel = Number.parseInt(searchParams.get("abstractionLevel") || "50")
     const searchQuery = searchParams.get("search") || ""
 
-    const result = await supabaseContentService.getConceptMapData(abstractionLevel, searchQuery)
+    const conceptMap = await contentService.getConceptMap(user.id, abstractionLevel, searchQuery)
 
-    return new Response(JSON.stringify(result), {
-      headers: { "Content-Type": "application/json" },
-    })
+    return new Response(JSON.stringify(conceptMap), { headers: { "Content-Type": "application/json" } })
   } catch (error) {
     console.error("Concept map error:", error)
     return new Response(JSON.stringify({ error: "Failed to fetch concept map" }), {
@@ -19,4 +19,4 @@ export async function GET(request: NextRequest) {
       headers: { "Content-Type": "application/json" },
     })
   }
-}
+})

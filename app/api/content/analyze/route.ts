@@ -1,14 +1,30 @@
 import type { NextRequest } from "next/server"
-import { supabaseContentService } from "@/lib/services/supabase-content-service"
+import { createAuthenticatedHandler } from "@/lib/auth/auth-utils"
+import { contentService } from "@/lib/services/content-service"
+import { cacheService } from "@/lib/cache/redis"
+import crypto from "crypto"
 import * as cheerio from "cheerio"
 
-export async function POST(request: NextRequest) {
+export const POST = createAuthenticatedHandler(async (request: NextRequest, user) => {
   try {
     const { url } = await request.json()
 
     if (!url) {
       return new Response(JSON.stringify({ error: "URL is required" }), {
         status: 400,
+        headers: { "Content-Type": "application/json" },
+      })
+    }
+
+    // Generate content hash for caching
+    const contentHash = crypto.createHash("sha256").update(url).digest("hex")
+    const cacheKey = cacheService.keys.grokAnalysis(contentHash)
+
+    // Check cache first
+    const cachedAnalysis = await cacheService.getJSON(cacheKey)
+    if (cachedAnalysis) {
+      console.log("Returning cached analysis for:", url)
+      return new Response(JSON.stringify({ analysis: cachedAnalysis, cached: true }), {
         headers: { "Content-Type": "application/json" },
       })
     }
@@ -63,23 +79,44 @@ export async function POST(request: NextRequest) {
       throw new Error("No content could be extracted from the URL")
     }
 
-    // Analyze with Grok
-    const analysis = await analyzeWithGrok(title, content, url)
-
-    // Store content and analysis
-    const result = await supabaseContentService.storeAnalyzedContent({
+    // Store content
+    const { contentId, isNew } = await contentService.storeContent(user.id, {
       title,
       url,
       content,
       source: "web",
-      analysis,
     })
+
+    // Analyze with Grok if new content
+    let analysis
+    if (isNew) {
+      analysis = await analyzeWithGrok(title, content, url)
+
+      // Store analysis
+      await contentService.storeAnalysis(user.id, {
+        contentId,
+        summary: analysis.summary,
+        entities: analysis.entities,
+        tags: analysis.tags,
+        priority: analysis.priority,
+        fullContent: analysis.fullContent,
+        confidence: analysis.confidence,
+      })
+
+      // Cache the analysis for 24 hours
+      await cacheService.set(cacheKey, analysis, 86400)
+    } else {
+      // Get existing analysis
+      const existingContent = await contentService.getUserContent(user.id, { limit: 1 })
+      analysis = existingContent.items.find((item) => item.id === contentId)?.analysis
+    }
 
     return new Response(
       JSON.stringify({
-        contentId: result.contentId,
+        contentId,
         analysis,
-        isNew: result.isNew,
+        isNew,
+        cached: !isNew,
       }),
       { headers: { "Content-Type": "application/json" } },
     )
@@ -90,7 +127,7 @@ export async function POST(request: NextRequest) {
       headers: { "Content-Type": "application/json" },
     })
   }
-}
+})
 
 async function analyzeWithGrok(title: string, content: string, url: string) {
   const apiKey = process.env.XAI_API_KEY
@@ -104,11 +141,11 @@ async function analyzeWithGrok(title: string, content: string, url: string) {
         isFullRead: false,
       },
       entities: [
-        { name: "Technology", type: "concept" },
-        { name: "Innovation", type: "concept" },
+        { name: "Technology", type: "CONCEPT" },
+        { name: "Innovation", type: "CONCEPT" },
       ],
       tags: ["technology", "analysis"],
-      priority: "read" as const,
+      priority: "READ" as const,
       confidence: 0.7,
     }
   }
@@ -131,9 +168,9 @@ async function analyzeWithGrok(title: string, content: string, url: string) {
                 "paragraph": "Detailed paragraph summary",
                 "isFullRead": false
               },
-              "entities": [{"name": "Entity Name", "type": "concept"}],
+              "entities": [{"name": "Entity Name", "type": "CONCEPT|PERSON|ORGANIZATION|TECHNOLOGY|METHODOLOGY"}],
               "tags": ["tag1", "tag2", "tag3"],
-              "priority": "skim|read|deep-dive",
+              "priority": "SKIM|READ|DEEP_DIVE",
               "confidence": 0.8
             }`,
           },
@@ -166,9 +203,9 @@ async function analyzeWithGrok(title: string, content: string, url: string) {
         paragraph: `This content has been processed with a fallback analyzer due to API limitations.`,
         isFullRead: false,
       },
-      entities: [{ name: "Content", type: "concept" }],
+      entities: [{ name: "Content", type: "CONCEPT" }],
       tags: ["analyzed", "fallback"],
-      priority: "read" as const,
+      priority: "READ" as const,
       confidence: 0.5,
     }
   }

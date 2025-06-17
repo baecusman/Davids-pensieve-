@@ -18,24 +18,20 @@ export class UserService {
       return cached
     }
 
-    const { data: settings, error } = await supabase
-      .from('user_settings')
-      .select('*')
-      .eq('user_id', userId)
-      .single()
+    const { data: settings, error } = await supabase.from("user_settings").select("*").eq("user_id", userId).single()
 
     if (error) {
-      console.error('Error getting user settings:', error)
-      
+      console.error("Error getting user settings:", error)
+
       // If settings don't exist, create default settings
-      if (error.code === 'PGRST116') {
+      if (error.code === "PGRST116") {
         return this.createDefaultSettings(userId)
       }
-      
+
       return {
         digest_email: null,
-        digest_frequency: 'WEEKLY',
-        theme: 'light',
+        digest_frequency: "WEEKLY",
+        theme: "light",
       }
     }
 
@@ -45,13 +41,16 @@ export class UserService {
     return settings
   }
 
-  async updateUserSettings(userId: string, data: {
-    digestEmail?: string
-    digestFrequency?: string
-    theme?: string
-  }) {
+  async updateUserSettings(
+    userId: string,
+    data: {
+      digestEmail?: string
+      digestFrequency?: string
+      theme?: string
+    },
+  ) {
     const { data: settings, error } = await supabase
-      .from('user_settings')
+      .from("user_settings")
       .upsert({
         user_id: userId,
         digest_email: data.digestEmail,
@@ -62,7 +61,7 @@ export class UserService {
       .single()
 
     if (error) {
-      console.error('Error updating user settings:', error)
+      console.error("Error updating user settings:", error)
       throw new Error(`Failed to update settings: ${error.message}`)
     }
 
@@ -76,18 +75,14 @@ export class UserService {
     const defaultSettings = {
       user_id: userId,
       digest_email: null,
-      digest_frequency: 'WEEKLY',
-      theme: 'light',
+      digest_frequency: "WEEKLY",
+      theme: "light",
     }
 
-    const { data: settings, error } = await supabase
-      .from('user_settings')
-      .insert(defaultSettings)
-      .select()
-      .single()
+    const { data: settings, error } = await supabase.from("user_settings").insert(defaultSettings).select().single()
 
     if (error) {
-      console.error('Error creating default settings:', error)
+      console.error("Error creating default settings:", error)
       return defaultSettings
     }
 
@@ -96,29 +91,31 @@ export class UserService {
 
   async exportUserData(userId: string) {
     // Get all user data
-    const { data: content } = await supabase
-      .from('content')
-      .select('*')
-      .eq('user_id', userId)
+    const { data: content } = await supabase.from("content").select("*").eq("user_id", userId)
 
-    const { data: analysis } = await supabase
-      .from('analysis')
-      .select('*')
-      .eq('user_id', userId)
+    const { data: analysis } = await supabase.from("analysis").select("*").eq("user_id", userId)
 
-    const { data: concepts } = await supabase
-      .from('concepts')
-      .select('*')
-      .eq('user_id', userId)
+    const { data: concepts } = await supabase.from("concepts").select("*").eq("user_id", userId)
 
-    const { data: relationships } = await supabase
-      .from('relationships')
-      .select('*')
-      .eq('user_id', userId)
+    const { data: relationships } = await supabase.from("relationships").select("*").eq("user_id", userId)
 
-    const { data: feeds } = await supabase
-      .from('feeds')
-      .select('*')
-      .eq('user_id', userId)
+    const { data: feeds } = await supabase.from("feeds").select("*").eq("user_id", userId)
 
-    const { data
+    const { data: digests } = await supabase.from("digests").select("*").eq("user_id", userId)
+
+    const { data: settings } = await supabase.from("user_settings").select("*").eq("user_id", userId)
+
+    return {
+      content: content || [],
+      analysis: analysis || [],
+      concepts: concepts || [],
+      relationships: relationships || [],
+      feeds: feeds || [],
+      digests: digests || [],
+      settings: settings || [],
+      exportedAt: new Date().toISOString(),
+    }
+  }
+}
+
+export const userService = UserService.getInstance()
