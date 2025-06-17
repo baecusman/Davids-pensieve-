@@ -1,108 +1,49 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { simpleAuth } from "@/lib/auth/simple-auth"
-import { userSegmentedDatabase } from "@/lib/database/user-segmented-database"
-import { performanceMonitor } from "@/lib/performance-monitor"
-import SimpleLogin from "@/components/auth/simple-login"
-import Navigation from "@/components/navigation"
-import DigestsView from "@/components/views/digests-view"
-import ConceptMapView from "@/components/views/concept-map-view"
-import SourceManagementView from "@/components/views/source-management-view"
-import SettingsView from "@/components/views/settings-view"
-import ErrorBoundary from "@/components/error-boundary"
+import { useAuth } from "@/components/auth/auth-provider"
+import { LoginPage } from "@/components/auth/login-page"
+import { Navigation } from "@/components/navigation"
+import { useState } from "react"
+import { SourceManagementView } from "@/components/views/source-management-view"
+import { DigestsView } from "@/components/views/digests-view"
+import { ConceptMapView } from "@/components/views/concept-map-view"
+import { SettingsView } from "@/components/views/settings-view"
 
 export default function Home() {
-  const [currentUser, setCurrentUser] = useState<any>(null)
-  const [activeView, setActiveView] = useState<"digests" | "concept-map" | "source-management" | "settings">("digests")
-  const [isLoading, setIsLoading] = useState(true)
+  const { user, loading } = useAuth()
+  const [activeView, setActiveView] = useState("sources")
 
-  useEffect(() => {
-    const timer = performanceMonitor.startTimer("auth-check")
-
-    // Initialize auth system first
-    simpleAuth.initialize()
-
-    if (simpleAuth.isAuthenticated()) {
-      const user = simpleAuth.getCurrentUser()
-      if (user) {
-        setCurrentUser(user)
-
-        // Migrate existing data if needed
-        const migrationResult = userSegmentedDatabase.migrateExistingData()
-        if (migrationResult.migrated > 0) {
-          console.log(`Migrated ${migrationResult.migrated} records for user segmentation`)
-        }
-      }
-    }
-
-    timer()
-    setIsLoading(false)
-  }, [])
-
-  const handleLogin = (user: any) => {
-    const timer = performanceMonitor.startTimer("login")
-    setCurrentUser(user)
-
-    // Extend session on activity
-    simpleAuth.extendSession()
-    timer()
-  }
-
-  const handleLogout = () => {
-    const timer = performanceMonitor.startTimer("logout")
-    simpleAuth.logout()
-    setCurrentUser(null)
-    setActiveView("digests")
-    timer()
-  }
-
-  const renderActiveView = () => {
-    const timer = performanceMonitor.startTimer("render")
-
-    let component
-    switch (activeView) {
-      case "digests":
-        component = <DigestsView />
-        break
-      case "concept-map":
-        component = <ConceptMapView />
-        break
-      case "source-management":
-        component = <SourceManagementView />
-        break
-      case "settings":
-        component = <SettingsView />
-        break
-      default:
-        component = <DigestsView />
-    }
-
-    timer()
-    return component
-  }
-
-  if (isLoading) {
+  if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading Pensive...</p>
-        </div>
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-gray-900"></div>
       </div>
     )
   }
 
-  if (!currentUser) {
-    return <SimpleLogin onLogin={handleLogin} />
+  if (!user) {
+    return <LoginPage />
+  }
+
+  const renderView = () => {
+    switch (activeView) {
+      case "sources":
+        return <SourceManagementView />
+      case "digests":
+        return <DigestsView />
+      case "concepts":
+        return <ConceptMapView />
+      case "settings":
+        return <SettingsView />
+      default:
+        return <SourceManagementView />
+    }
   }
 
   return (
-    <ErrorBoundary>
-      <div className="min-h-screen bg-gray-50">
-        <Navigation activeView={activeView} onViewChange={setActiveView} user={currentUser} onLogout={handleLogout} />
-        <main>{renderActiveView()}</main>
-      </div>
-    </ErrorBoundary>
+    <div className="min-h-screen bg-gray-50">
+      <Navigation activeView={activeView} onViewChange={setActiveView} />
+      <main className="container mx-auto px-4 py-8">{renderView()}</main>
+    </div>
   )
 }

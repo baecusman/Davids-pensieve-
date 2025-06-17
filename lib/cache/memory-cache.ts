@@ -1,111 +1,64 @@
-interface CacheItem<T> {
-  value: T
-  expiry: number
+interface CacheItem {
+  value: any
+  expiresAt: number
 }
 
-export class MemoryCache {
-  private static instance: MemoryCache
-  private cache = new Map<string, CacheItem<any>>()
-  private cleanupInterval: NodeJS.Timeout
+class MemoryCache {
+  private cache = new Map<string, CacheItem>()
 
-  private constructor() {
-    // Clean up expired items every 5 minutes
-    this.cleanupInterval = setInterval(
-      () => {
-        this.cleanup()
-      },
-      5 * 60 * 1000,
-    )
+  keys = {
+    grokAnalysis: (hash: string) => `grok:${hash}`,
+    rssFeed: (url: string) => `rss:${Buffer.from(url).toString("base64")}`,
+    userContent: (userId: string) => `user:${userId}:content`,
   }
 
-  static getInstance(): MemoryCache {
-    if (!MemoryCache.instance) {
-      MemoryCache.instance = new MemoryCache()
+  async set(key: string, value: any, ttlSeconds = 3600): Promise<void> {
+    const expiresAt = Date.now() + ttlSeconds * 1000
+    this.cache.set(key, { value, expiresAt })
+
+    // Clean up expired items periodically
+    if (Math.random() < 0.01) {
+      // 1% chance
+      this.cleanup()
     }
-    return MemoryCache.instance
   }
 
-  async get<T>(key: string): Promise<T | null> {
+  async get(key: string): Promise<any> {
     const item = this.cache.get(key)
+
     if (!item) return null
 
-    if (Date.now() > item.expiry) {
+    if (Date.now() > item.expiresAt) {
       this.cache.delete(key)
       return null
     }
 
-    return item.value as T
+    return item.value
   }
 
-  async set(key: string, value: any, ttlSeconds = 3600): Promise<boolean> {
-    try {
-      const expiry = Date.now() + ttlSeconds * 1000
-      this.cache.set(key, { value, expiry })
-      return true
-    } catch (error) {
-      console.error("Memory cache set error:", error)
-      return false
-    }
+  async getJSON(key: string): Promise<any> {
+    return this.get(key)
   }
 
-  async del(key: string): Promise<boolean> {
-    return this.cache.delete(key)
+  async delete(key: string): Promise<void> {
+    this.cache.delete(key)
   }
 
-  async exists(key: string): Promise<boolean> {
-    const item = this.cache.get(key)
-    if (!item) return false
-
-    if (Date.now() > item.expiry) {
-      this.cache.delete(key)
-      return false
-    }
-
-    return true
-  }
-
-  async getJSON<T>(key: string): Promise<T | null> {
-    return this.get<T>(key)
-  }
-
-  private cleanup() {
+  private cleanup(): void {
     const now = Date.now()
     for (const [key, item] of this.cache.entries()) {
-      if (now > item.expiry) {
+      if (now > item.expiresAt) {
         this.cache.delete(key)
       }
     }
   }
 
-  // Generate cache keys (same as Redis version)
-  static keys = {
-    grokAnalysis: (contentHash: string) => `grok:analysis:${contentHash}`,
-    rssFeed: (feedUrl: string) => `rss:feed:${Buffer.from(feedUrl).toString("base64")}`,
-    userContent: (userId: string, page: number) => `user:content:${userId}:${page}`,
-    conceptMap: (userId: string, abstractionLevel: number) => `concept:map:${userId}:${abstractionLevel}`,
-  }
-
-  // Get cache stats for monitoring
   getStats() {
-    const now = Date.now()
-    let validItems = 0
-    let expiredItems = 0
-
-    for (const [, item] of this.cache.entries()) {
-      if (now > item.expiry) {
-        expiredItems++
-      } else {
-        validItems++
-      }
-    }
-
     return {
-      totalItems: this.cache.size,
-      validItems,
-      expiredItems,
-      memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024, // MB
+      size: this.cache.size,
+      keys: Array.from(this.cache.keys()),
     }
   }
 }
 
-export const memoryCache = MemoryCache.getInstance()
+export const memoryCache = new MemoryCache()
