@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/database/prisma"
-import { cacheService } from "@/lib/cache/redis"
+import { memoryCache } from "@/lib/cache/memory-cache"
+import { jobQueue } from "./job-queue"
 import crypto from "crypto"
 
 export class ContentService {
@@ -53,45 +54,19 @@ export class ContentService {
       },
     })
 
+    // Queue analysis job
+    await jobQueue.addJob(jobQueue.JobTypes.ANALYZE_CONTENT, {
+      contentId: content.id,
+      userId,
+      title: data.title,
+      content: data.content,
+      url: data.url,
+    })
+
     // Invalidate user content cache
     await this.invalidateUserContentCache(userId)
 
     return { contentId: content.id, isNew: true }
-  }
-
-  async storeAnalysis(
-    userId: string,
-    data: {
-      contentId: string
-      summary: any
-      entities: any[]
-      tags: string[]
-      priority: "SKIM" | "READ" | "DEEP_DIVE"
-      fullContent?: string
-      confidence?: number
-    },
-  ) {
-    const analysis = await prisma.analysis.create({
-      data: {
-        userId,
-        contentId: data.contentId,
-        summary: data.summary,
-        entities: data.entities,
-        tags: data.tags,
-        priority: data.priority,
-        fullContent: data.fullContent,
-        confidence: data.confidence || 0.8,
-      },
-    })
-
-    // Process concepts and relationships
-    await this.processConcepts(userId, data.contentId, data.entities)
-
-    // Invalidate related caches
-    await this.invalidateUserContentCache(userId)
-    await this.invalidateConceptMapCache(userId)
-
-    return analysis.id
   }
 
   async getUserContent(
@@ -109,8 +84,8 @@ export class ContentService {
     const offset = (page - 1) * limit
 
     // Try cache first
-    const cacheKey = cacheService.keys.userContent(userId, page)
-    const cached = await cacheService.getJSON<any>(cacheKey)
+    const cacheKey = memoryCache.keys.userContent(userId, page)
+    const cached = await memoryCache.getJSON<any>(cacheKey)
     if (cached) {
       return cached
     }
@@ -159,47 +134,59 @@ export class ContentService {
     }
 
     // Cache for 5 minutes
-    await cacheService.set(cacheKey, result, 300)
+    await memoryCache.set(cacheKey, result, 300)
 
     return result
   }
 
   async getConceptMap(userId: string, abstractionLevel = 50, searchQuery = "") {
-    const cacheKey = cacheService.keys.conceptMap(userId, abstractionLevel)
-    const cached = await cacheService.getJSON<any>(cacheKey)
+    const cacheKey = memoryCache.keys.conceptMap(userId, abstractionLevel)
+    const cached = await memoryCache.getJSON<any>(cacheKey)
     if (cached && !searchQuery) {
       return cached
     }
 
-    // Get concepts with frequency filtering
-    const maxFrequency = await prisma.concept.findFirst({
-      where: { userId },
-      orderBy: { frequency: "desc" },
-      select: { frequency: true },
-    })
+    // Get concepts with frequency filtering using raw SQL for better performance
+    const maxFrequencyResult = await prisma.$queryRaw<[{ max_frequency: number }]>`
+      SELECT MAX(frequency) as max_frequency 
+      FROM concepts 
+      WHERE "userId" = ${userId}
+    `
 
-    const minFrequency = Math.max(1, Math.floor((abstractionLevel / 100) * (maxFrequency?.frequency || 1)))
+    const maxFrequency = maxFrequencyResult[0]?.max_frequency || 1
+    const minFrequency = Math.max(1, Math.floor((abstractionLevel / 100) * maxFrequency))
 
-    const whereClause: any = {
-      userId,
-      frequency: { gte: minFrequency },
-    }
+    let conceptsQuery = `
+      SELECT c.*, 
+             COALESCE(
+               json_agg(
+                 json_build_object(
+                   'id', r.id,
+                   'toConceptId', r."toConceptId",
+                   'type', r.type,
+                   'strength', r.strength,
+                   'toConceptName', tc.name
+                 )
+               ) FILTER (WHERE r.id IS NOT NULL), 
+               '[]'
+             ) as relationships
+      FROM concepts c
+      LEFT JOIN relationships r ON c.id = r."fromConceptId"
+      LEFT JOIN concepts tc ON r."toConceptId" = tc.id
+      WHERE c."userId" = $1 
+        AND c.frequency >= $2
+    `
+
+    const params: any[] = [userId, minFrequency]
 
     if (searchQuery) {
-      whereClause.name = {
-        contains: searchQuery,
-        mode: "insensitive",
-      }
+      conceptsQuery += ` AND c.name ILIKE $3`
+      params.push(`%${searchQuery}%`)
     }
 
-    const concepts = await prisma.concept.findMany({
-      where: whereClause,
-      include: {
-        fromRelationships: {
-          include: { toConcept: true },
-        },
-      },
-    })
+    conceptsQuery += ` GROUP BY c.id ORDER BY c.frequency DESC`
+
+    const concepts = (await prisma.$queryRawUnsafe(conceptsQuery, ...params)) as any[]
 
     // Transform to graph format
     const nodes = concepts.map((concept) => ({
@@ -207,14 +194,14 @@ export class ContentService {
       label: concept.name,
       type: concept.type,
       frequency: concept.frequency,
-      density: this.calculateNodeDensity(concept.frequency, maxFrequency?.frequency || 1),
+      density: this.calculateNodeDensity(concept.frequency, maxFrequency),
       description: concept.description,
     }))
 
     const edges = concepts.flatMap((concept) =>
-      concept.fromRelationships.map((rel) => ({
+      (concept.relationships || []).map((rel: any) => ({
         id: rel.id,
-        source: rel.fromConceptId,
+        source: concept.id,
         target: rel.toConceptId,
         type: rel.type,
         weight: rel.strength,
@@ -225,66 +212,10 @@ export class ContentService {
 
     // Cache for 10 minutes if no search query
     if (!searchQuery) {
-      await cacheService.set(cacheKey, result, 600)
+      await memoryCache.set(cacheKey, result, 600)
     }
 
     return result
-  }
-
-  private async processConcepts(userId: string, contentId: string, entities: any[]) {
-    for (const entity of entities) {
-      // Upsert concept
-      const concept = await prisma.concept.upsert({
-        where: {
-          userId_name_type: {
-            userId,
-            name: entity.name,
-            type: entity.type,
-          },
-        },
-        update: {
-          frequency: { increment: 1 },
-        },
-        create: {
-          userId,
-          name: entity.name,
-          type: entity.type,
-          frequency: 1,
-        },
-      })
-
-      // Create relationships between concepts in the same content
-      const otherConcepts = await prisma.concept.findMany({
-        where: {
-          userId,
-          name: { not: entity.name },
-        },
-      })
-
-      for (const otherConcept of otherConcepts) {
-        await prisma.relationship.upsert({
-          where: {
-            userId_fromConceptId_toConceptId_contentId: {
-              userId,
-              fromConceptId: concept.id,
-              toConceptId: otherConcept.id,
-              contentId,
-            },
-          },
-          update: {
-            strength: { increment: 0.1 },
-          },
-          create: {
-            userId,
-            fromConceptId: concept.id,
-            toConceptId: otherConcept.id,
-            contentId,
-            type: "RELATES_TO",
-            strength: 0.5,
-          },
-        })
-      }
-    }
   }
 
   private calculateNodeDensity(frequency: number, maxFrequency: number): number {
@@ -314,16 +245,8 @@ export class ContentService {
   private async invalidateUserContentCache(userId: string) {
     // Invalidate all pages of user content cache
     for (let page = 1; page <= 10; page++) {
-      const cacheKey = cacheService.keys.userContent(userId, page)
-      await cacheService.del(cacheKey)
-    }
-  }
-
-  private async invalidateConceptMapCache(userId: string) {
-    // Invalidate concept map cache for different abstraction levels
-    for (let level = 0; level <= 100; level += 10) {
-      const cacheKey = cacheService.keys.conceptMap(userId, level)
-      await cacheService.del(cacheKey)
+      const cacheKey = memoryCache.keys.userContent(userId, page)
+      await memoryCache.del(cacheKey)
     }
   }
 }

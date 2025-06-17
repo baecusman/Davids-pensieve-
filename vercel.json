@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/process-jobs",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/schedule-digests",
+      "schedule": "0 9 * * 1"
+    },
+    {
+      "path": "/api/cron/fetch-rss-feeds",
+      "schedule": "0 */2 * * *"
+    }
+  ]
+}

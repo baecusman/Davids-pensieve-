@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,20 +11,23 @@ datasource db {
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
+  name      String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // User preferences
-  preferences Json?
+  digestFrequency String @default("WEEKLY") // WEEKLY, MONTHLY, NEVER
+  digestEmail     String?
+  timezone        String @default("UTC")
 
   // Relations
   content       Content[]
   analyses      Analysis[]
   concepts      Concept[]
   relationships Relationship[]
-  feeds         Feed[]
   digests       Digest[]
-  digestJobs    DigestJob[]
+  sources       Source[]
+  jobs          Job[]
 
   @@map("users")
 }
@@ -36,77 +36,77 @@ model Content {
   id        String   @id @default(cuid())
   userId    String
   title     String
-  url       String
+  url       String?
   content   String   @db.Text
   source    String
-  hash      String   // Content hash for deduplication
+  hash      String   // For deduplication
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  analyses     Analysis[]
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analyses      Analysis[]
   relationships Relationship[]
 
+  // Indexes
   @@unique([userId, hash])
   @@index([userId, createdAt])
   @@index([userId, source])
-  @@index([hash])
   @@map("content")
 }
 
 model Analysis {
-  id         String   @id @default(cuid())
-  userId     String
-  contentId  String
-  summary    Json     // { sentence, paragraph, isFullRead }
-  entities   Json     // Array of { name, type }
-  tags       String[]
-  priority   Priority @default(READ)
-  fullContent String? @db.Text
-  confidence Float    @default(0.8)
-  createdAt  DateTime @default(now())
+  id          String   @id @default(cuid())
+  userId      String
+  contentId   String
+  summary     Json
+  entities    Json
+  tags        String[]
+  priority    Priority @default(READ)
+  fullContent String?  @db.Text
+  confidence  Float    @default(0.8)
+  createdAt   DateTime @default(now())
 
   // Relations
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, contentId])
+  // Indexes
   @@index([userId, priority])
   @@index([userId, createdAt])
   @@map("analyses")
 }
 
 model Concept {
-  id          String      @id @default(cuid())
+  id          String   @id @default(cuid())
   userId      String
   name        String
-  type        ConceptType @default(CONCEPT)
+  type        String
+  frequency   Int      @default(1)
   description String?
-  frequency   Int         @default(1)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Relations
-  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  fromRelationships   Relationship[] @relation("FromConcept")
-  toRelationships     Relationship[] @relation("ToConcept")
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromRelationships Relationship[] @relation("FromConcept")
+  toRelationships   Relationship[] @relation("ToConcept")
 
+  // Indexes
   @@unique([userId, name, type])
   @@index([userId, frequency])
-  @@index([userId, type])
   @@map("concepts")
 }
 
 model Relationship {
-  id            String           @id @default(cuid())
+  id            String   @id @default(cuid())
   userId        String
   fromConceptId String
   toConceptId   String
-  type          RelationshipType @default(RELATES_TO)
-  strength      Float            @default(0.5)
   contentId     String
-  createdAt     DateTime         @default(now())
+  type          String   @default("RELATES_TO")
+  strength      Float    @default(0.5)
+  createdAt     DateTime @default(now())
 
   // Relations
   user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -114,120 +114,111 @@ model Relationship {
   toConcept   Concept @relation("ToConcept", fields: [toConceptId], references: [id], onDelete: Cascade)
   content     Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
+  // Indexes
   @@unique([userId, fromConceptId, toConceptId, contentId])
   @@index([userId, fromConceptId])
   @@index([userId, toConceptId])
   @@map("relationships")
 }
 
-model Feed {
-  id            String   @id @default(cuid())
-  userId        String
-  url           String
-  title         String
-  description   String?
-  isActive      Boolean  @default(true)
-  fetchInterval Int      @default(3600) // seconds
-  lastFetched   DateTime?
-  lastItemDate  DateTime?
-  itemCount     Int      @default(0)
-  errorCount    Int      @default(0)
-  lastError     String?
-  etag          String?  // For conditional fetching
-  lastModified  String?  // For conditional fetching
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+model Source {
+  id          String     @id @default(cuid())
+  userId      String
+  name        String
+  url         String
+  type        SourceType
+  isActive    Boolean    @default(true)
+  lastFetched DateTime?
+  etag        String?
+  lastModified String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 
   // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Indexes
   @@unique([userId, url])
   @@index([userId, isActive])
-  @@index([lastFetched])
-  @@map("feeds")
+  @@index([type, isActive])
+  @@map("sources")
 }
 
 model Digest {
-  id               String    @id @default(cuid())
-  userId           String
-  timeframe        Timeframe
-  title            String
-  summary          String    @db.Text
-  contentIds       String[]
-  trendingConcepts Json      // Array of trending concept data
-  stats            Json      // Digest statistics
-  createdAt        DateTime  @default(now())
+  id          String      @id @default(cuid())
+  userId      String
+  type        DigestType
+  title       String
+  content     String      @db.Text
+  contentIds  String[]
+  status      DigestStatus @default(DRAFT)
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  createdAt   DateTime    @default(now())
 
   // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId, timeframe])
-  @@index([userId, createdAt])
+  // Indexes
+  @@index([userId, type, status])
+  @@index([scheduledAt])
   @@map("digests")
 }
 
-model DigestJob {
-  id           String          @id @default(cuid())
-  userId       String
-  email        String
-  scheduledFor DateTime
-  status       DigestJobStatus @default(PENDING)
-  lastSent     DateTime?
-  error        String?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+// Job queue table for background processing
+model Job {
+  id          String    @id @default(cuid())
+  userId      String?
+  type        String
+  payload     Json
+  status      JobStatus @default(PENDING)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  error       String?
+  scheduledAt DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
 
   // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId])
-  @@index([status, scheduledFor])
-  @@map("digest_jobs")
+  // Indexes
+  @@index([status, scheduledAt])
+  @@index([type, status])
+  @@map("jobs")
 }
 
-// Cache table for Redis-like functionality in Postgres
-model Cache {
-  key       String   @id
-  value     Json
-  expiresAt DateTime?
-  createdAt DateTime @default(now())
-
-  @@index([expiresAt])
-  @@map("cache")
-}
-
-// Enums
 enum Priority {
   SKIM
   READ
   DEEP_DIVE
 }
 
-enum ConceptType {
-  CONCEPT
-  PERSON
-  ORGANIZATION
-  TECHNOLOGY
-  METHODOLOGY
+enum SourceType {
+  RSS
+  PODCAST
+  TWITTER
+  MANUAL
 }
 
-enum RelationshipType {
-  INCLUDES
-  RELATES_TO
-  IMPLEMENTS
-  USES
-  COMPETES_WITH
-}
-
-enum Timeframe {
+enum DigestType {
   WEEKLY
   MONTHLY
   QUARTERLY
 }
 
-enum DigestJobStatus {
+enum DigestStatus {
+  DRAFT
+  SCHEDULED
+  SENT
+  FAILED
+}
+
+enum JobStatus {
   PENDING
-  PROCESSING
+  RUNNING
   COMPLETED
   FAILED
+  CANCELLED
 }
