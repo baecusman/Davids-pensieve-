@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/database/supabase-client"
+import { mockDb } from "@/lib/database/mock-db"
 import { memoryCache } from "@/lib/cache/memory-cache"
 import crypto from "crypto"
 
@@ -27,42 +27,26 @@ export class ContentService {
       .update(data.url + data.content)
       .digest("hex")
 
-    // Check if content already exists for this user
-    const { data: existing } = await supabase
-      .from("content")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("hash", hash)
-      .single()
+    // Check if content already exists (simplified check)
+    const existingContent = await mockDb.getContent(userId, { limit: 1000 })
+    const existing = existingContent.items.find((item) => item.hash === hash)
 
     if (existing) {
       return { contentId: existing.id, isNew: false }
     }
 
     // Store new content
-    const { data: content, error } = await supabase
-      .from("content")
-      .insert({
-        user_id: userId,
-        title: data.title,
-        url: data.url,
-        content: data.content,
-        source: data.source,
-        hash,
-      })
-      .select("id")
-      .single()
+    const content = await mockDb.createContent({
+      userId,
+      title: data.title,
+      url: data.url,
+      content: data.content,
+      source: data.source,
+      hash,
+    })
 
-    if (error) {
-      console.error("Error storing content:", error)
-      throw new Error(`Failed to store content: ${error.message}`)
-    }
-
-    // Analyze content (mock analysis for now)
+    // Analyze content
     await this.analyzeContent(userId, content.id, data.title, data.content, data.url)
-
-    // Invalidate user content cache
-    await this.invalidateUserContentCache(userId)
 
     return { contentId: content.id, isNew: true }
   }
@@ -83,14 +67,14 @@ export class ContentService {
           { name: "Software", type: "technology" },
         ],
         tags: ["technology", "analysis", "innovation"],
-        priority: "read",
+        priority: "read" as const,
         confidence: 0.8,
       }
 
       // Store analysis
-      const { error } = await supabase.from("analysis").insert({
-        user_id: userId,
-        content_id: contentId,
+      await mockDb.createAnalysis({
+        userId,
+        contentId,
         summary: analysis.summary,
         entities: analysis.entities,
         tags: analysis.tags,
@@ -98,86 +82,9 @@ export class ContentService {
         confidence: analysis.confidence,
       })
 
-      if (error) {
-        console.error("Error storing analysis:", error)
-      }
-
-      // Create concepts and relationships
-      await this.processEntities(userId, contentId, analysis.entities)
-
       return analysis
     } catch (error) {
       console.error("Error analyzing content:", error)
-    }
-  }
-
-  async processEntities(userId: string, contentId: string, entities: any[]) {
-    try {
-      const conceptIds: string[] = []
-
-      for (const entity of entities) {
-        // Try to find existing concept
-        const { data: existingConcept } = await supabase
-          .from("concepts")
-          .select("id, frequency")
-          .eq("user_id", userId)
-          .eq("name", entity.name)
-          .eq("type", entity.type)
-          .single()
-
-        let conceptId: string
-
-        if (existingConcept) {
-          // Update frequency
-          await supabase
-            .from("concepts")
-            .update({ frequency: existingConcept.frequency + 1 })
-            .eq("id", existingConcept.id)
-          conceptId = existingConcept.id
-        } else {
-          // Create new concept
-          const { data: newConcept, error } = await supabase
-            .from("concepts")
-            .insert({
-              user_id: userId,
-              name: entity.name,
-              type: entity.type,
-              frequency: 1,
-            })
-            .select("id")
-            .single()
-
-          if (error) {
-            console.error("Error creating concept:", error)
-            continue
-          }
-          conceptId = newConcept.id
-        }
-
-        conceptIds.push(conceptId)
-      }
-
-      // Create relationships between concepts
-      for (let i = 0; i < conceptIds.length; i++) {
-        for (let j = i + 1; j < conceptIds.length; j++) {
-          await supabase.from("relationships").upsert(
-            {
-              user_id: userId,
-              from_concept_id: conceptIds[i],
-              to_concept_id: conceptIds[j],
-              content_id: contentId,
-              type: "RELATES_TO",
-              strength: 0.5,
-            },
-            {
-              onConflict: "user_id,from_concept_id,to_concept_id,content_id",
-              ignoreDuplicates: true,
-            },
-          )
-        }
-      }
-    } catch (error) {
-      console.error("Error processing entities:", error)
     }
   }
 
@@ -191,70 +98,35 @@ export class ContentService {
       timeframe?: "weekly" | "monthly" | "quarterly"
     } = {},
   ) {
-    const page = options.page || 1
-    const limit = options.limit || 50
-    const offset = (page - 1) * limit
-
-    // Try cache first
-    const cacheKey = `user-content:${userId}:${page}:${limit}:${options.source || ""}:${options.priority || ""}:${options.timeframe || ""}`
+    const cacheKey = `user-content:${userId}:${JSON.stringify(options)}`
     const cached = memoryCache.getJSON<any>(cacheKey)
     if (cached) {
       return cached
     }
 
-    // Build query
-    let query = supabase
-      .from("content")
-      .select(`
-        *,
-        analysis:analysis(*)
-      `)
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .range(offset, offset + limit - 1)
+    const result = await mockDb.getContent(userId, options)
 
-    if (options.source) {
-      query = query.eq("source", options.source)
-    }
-
-    if (options.timeframe) {
-      const cutoff = this.getTimeframeCutoff(options.timeframe)
-      query = query.gte("created_at", cutoff.toISOString())
-    }
-
-    const { data: content, error } = await query
-
-    if (error) {
-      console.error("Error getting user content:", error)
-      return { items: [], total: 0, hasMore: false, page, totalPages: 0 }
-    }
-
-    // Get total count
-    const { count: total } = await supabase
-      .from("content")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", userId)
-
-    const result = {
-      items: (content || []).map((item) => ({
+    // Transform to expected format
+    const transformedResult = {
+      items: result.items.map((item) => ({
         id: item.id,
         title: item.title,
         url: item.url,
         content: item.content,
         source: item.source,
-        createdAt: item.created_at,
-        analysis: item.analysis?.[0] || null,
+        createdAt: item.createdAt,
+        analysis: item.analysis || null,
       })),
-      total: total || 0,
-      hasMore: offset + limit < (total || 0),
-      page,
-      totalPages: Math.ceil((total || 0) / limit),
+      total: result.total,
+      hasMore: result.hasMore,
+      page: result.page,
+      totalPages: result.totalPages,
     }
 
     // Cache for 5 minutes
-    memoryCache.set(cacheKey, result, 300)
+    memoryCache.set(cacheKey, transformedResult, 300)
 
-    return result
+    return transformedResult
   }
 
   async getConceptMap(userId: string, abstractionLevel = 50, searchQuery = "") {
@@ -264,23 +136,8 @@ export class ContentService {
       return cached
     }
 
-    // Get concepts with frequency filtering
-    let conceptsQuery = supabase
-      .from("concepts")
-      .select("*")
-      .eq("user_id", userId)
-      .order("frequency", { ascending: false })
-
-    if (searchQuery) {
-      conceptsQuery = conceptsQuery.ilike("name", `%${searchQuery}%`)
-    }
-
-    const { data: concepts, error } = await conceptsQuery
-
-    if (error) {
-      console.error("Error getting concepts:", error)
-      return { nodes: [], edges: [] }
-    }
+    // Get concepts
+    const concepts = await mockDb.getConcepts(userId, { search: searchQuery })
 
     if (!concepts || concepts.length === 0) {
       return { nodes: [], edges: [] }
@@ -295,17 +152,7 @@ export class ContentService {
 
     // Get relationships for these concepts
     const conceptIds = filteredConcepts.map((c) => c.id)
-    const { data: relationships, error: relError } = await supabase
-      .from("relationships")
-      .select("*")
-      .eq("user_id", userId)
-      .in("from_concept_id", conceptIds)
-      .in("to_concept_id", conceptIds)
-
-    if (relError) {
-      console.error("Error getting relationships:", relError)
-      return { nodes: [], edges: [] }
-    }
+    const relationships = await mockDb.getRelationships(userId, conceptIds)
 
     // Transform to graph format
     const nodes = filteredConcepts.map((concept) => ({
@@ -317,10 +164,10 @@ export class ContentService {
       description: concept.description || `${concept.type} mentioned ${concept.frequency} times`,
     }))
 
-    const edges = (relationships || []).map((rel) => ({
+    const edges = relationships.map((rel) => ({
       id: rel.id,
-      source: rel.from_concept_id,
-      target: rel.to_concept_id,
+      source: rel.fromConceptId,
+      target: rel.toConceptId,
       type: rel.type,
       weight: rel.strength,
     }))
@@ -338,30 +185,6 @@ export class ContentService {
   private calculateNodeDensity(frequency: number, maxFrequency: number): number {
     if (maxFrequency <= 1) return 50
     return Math.min(100, Math.max(10, (frequency / maxFrequency) * 100))
-  }
-
-  private getTimeframeCutoff(timeframe: "weekly" | "monthly" | "quarterly"): Date {
-    const now = new Date()
-    const cutoff = new Date()
-
-    switch (timeframe) {
-      case "weekly":
-        cutoff.setDate(now.getDate() - 7)
-        break
-      case "monthly":
-        cutoff.setMonth(now.getMonth() - 1)
-        break
-      case "quarterly":
-        cutoff.setMonth(now.getMonth() - 3)
-        break
-    }
-
-    return cutoff
-  }
-
-  private async invalidateUserContentCache(userId: string) {
-    // In a real implementation, this would invalidate all cache keys for this user
-    memoryCache.clear()
   }
 }
 

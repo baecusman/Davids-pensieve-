@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/database/supabase-client"
+import { mockDb } from "@/lib/database/mock-db"
 import { memoryCache } from "@/lib/cache/memory-cache"
 
 export class DigestService {
@@ -18,69 +18,39 @@ export class DigestService {
       return cached
     }
 
-    const { data: digests, error } = await supabase
-      .from("digests")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-
-    if (error) {
-      console.error("Error getting user digests:", error)
-      return []
-    }
+    const digests = await mockDb.getDigests(userId)
 
     // Cache for 5 minutes
-    memoryCache.set(cacheKey, digests || [], 300)
+    memoryCache.set(cacheKey, digests, 300)
 
-    return digests || []
+    return digests
   }
 
   async generateDigest(userId: string, type: "weekly" | "monthly" | "quarterly") {
     // Get user's recent content based on digest type
-    const cutoff = this.getTimeframeCutoff(type)
+    const content = await mockDb.getContent(userId, {
+      timeframe: type,
+      limit: 50,
+    })
 
-    const { data: content, error } = await supabase
-      .from("content")
-      .select(`
-        *,
-        analysis:analysis(*)
-      `)
-      .eq("user_id", userId)
-      .gte("created_at", cutoff.toISOString())
-      .order("created_at", { ascending: false })
-
-    if (error) {
-      console.error("Error getting content for digest:", error)
-      throw new Error(`Failed to generate digest: ${error.message}`)
-    }
-
-    if (!content || content.length === 0) {
+    if (!content.items || content.items.length === 0) {
       throw new Error("No content available for digest")
     }
 
     // Generate digest content
-    const digestContent = await this.generateDigestContent(content, type)
+    const digestContent = await this.generateDigestContent(content.items, type)
 
     // Store digest
-    const { data: digest, error: digestError } = await supabase
-      .from("digests")
-      .insert({
-        user_id: userId,
-        type: type.toUpperCase(),
-        title: `Your ${type} Digest`,
-        content: digestContent,
-        content_ids: content.map((c) => c.id),
-        status: "SENT",
-        scheduled_at: new Date().toISOString(),
-        sent_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (digestError) {
-      console.error("Error storing digest:", digestError)
-      throw new Error(`Failed to store digest: ${digestError.message}`)
-    }
+    const digest = await mockDb.createDigest({
+      userId,
+      type: type.toUpperCase() as any,
+      title: `Your ${type} Digest`,
+      content: digestContent,
+      contentIds: content.items.map((c) => c.id),
+      status: "SENT",
+      scheduledAt: new Date().toISOString(),
+      sentAt: new Date().toISOString(),
+    })
 
     // Invalidate cache
     memoryCache.del(`user-digests:${userId}`)
@@ -90,45 +60,24 @@ export class DigestService {
 
   private async generateDigestContent(content: any[], type: string): Promise<string> {
     // Simple digest generation - in production, use Grok API
-    const priorityContent = content.filter((c) => c.analysis && c.analysis.length > 0)
+    const priorityContent = content.filter((c) => c.analysis)
 
     let html = `<h1>Your ${type} Digest</h1>`
     html += `<p>Here are the ${priorityContent.length} most important items from your recent reading:</p>`
 
     for (const item of priorityContent.slice(0, 10)) {
-      const analysis = item.analysis[0]
+      const analysis = item.analysis
       html += `
         <div style="margin-bottom: 20px; padding: 15px; border-left: 3px solid #007acc;">
           <h3><a href="${item.url || "#"}">${item.title}</a></h3>
           <p><strong>Priority:</strong> ${analysis.priority}</p>
           <p>${analysis.summary?.paragraph || "No summary available"}</p>
-          <p><small>Source: ${item.source} | ${new Date(item.created_at).toLocaleDateString()}</small></p>
+          <p><small>Source: ${item.source} | ${new Date(item.createdAt).toLocaleDateString()}</small></p>
         </div>
       `
     }
 
     return html
-  }
-
-  private getTimeframeCutoff(type: string): Date {
-    const now = new Date()
-    const cutoff = new Date()
-
-    switch (type) {
-      case "weekly":
-        cutoff.setDate(now.getDate() - 7)
-        break
-      case "monthly":
-        cutoff.setMonth(now.getMonth() - 1)
-        break
-      case "quarterly":
-        cutoff.setMonth(now.getMonth() - 3)
-        break
-      default:
-        cutoff.setDate(now.getDate() - 7)
-    }
-
-    return cutoff
   }
 }
 

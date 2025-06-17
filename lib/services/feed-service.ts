@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/database/supabase-client"
+import { mockDb } from "@/lib/database/mock-db"
 import { memoryCache } from "@/lib/cache/memory-cache"
 
 export class FeedService {
@@ -18,21 +18,12 @@ export class FeedService {
       return cached
     }
 
-    const { data: feeds, error } = await supabase
-      .from("feeds")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-
-    if (error) {
-      console.error("Error getting user feeds:", error)
-      return []
-    }
+    const feeds = await mockDb.getFeeds(userId)
 
     // Cache for 5 minutes
-    memoryCache.set(cacheKey, feeds || [], 300)
+    memoryCache.set(cacheKey, feeds, 300)
 
-    return feeds || []
+    return feeds
   }
 
   async addFeed(
@@ -43,22 +34,13 @@ export class FeedService {
       type?: string
     },
   ) {
-    const { data: feed, error } = await supabase
-      .from("feeds")
-      .insert({
-        user_id: userId,
-        url: data.url,
-        name: data.name,
-        type: data.type || "RSS",
-        is_active: true,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error("Error adding feed:", error)
-      throw new Error(`Failed to add feed: ${error.message}`)
-    }
+    const feed = await mockDb.createFeed({
+      userId,
+      url: data.url,
+      name: data.name,
+      type: data.type || "RSS",
+      isActive: true,
+    })
 
     // Invalidate cache
     memoryCache.del(`user-feeds:${userId}`)
@@ -76,22 +58,10 @@ export class FeedService {
       type?: string
     },
   ) {
-    const { data: feed, error } = await supabase
-      .from("feeds")
-      .update({
-        name: data.name,
-        url: data.url,
-        is_active: data.isActive,
-        type: data.type,
-      })
-      .eq("id", feedId)
-      .eq("user_id", userId)
-      .select()
-      .single()
+    const feed = await mockDb.updateFeed(feedId, data)
 
-    if (error) {
-      console.error("Error updating feed:", error)
-      throw new Error(`Failed to update feed: ${error.message}`)
+    if (!feed) {
+      throw new Error("Feed not found")
     }
 
     // Invalidate cache
@@ -101,11 +71,10 @@ export class FeedService {
   }
 
   async deleteFeed(userId: string, feedId: string) {
-    const { error } = await supabase.from("feeds").delete().eq("id", feedId).eq("user_id", userId)
+    const success = await mockDb.deleteFeed(feedId)
 
-    if (error) {
-      console.error("Error deleting feed:", error)
-      throw new Error(`Failed to delete feed: ${error.message}`)
+    if (!success) {
+      throw new Error("Failed to delete feed")
     }
 
     // Invalidate cache
@@ -117,19 +86,12 @@ export class FeedService {
   async fetchFeed(userId: string, feedId: string) {
     // In a real implementation, this would fetch the feed and process it
     // For now, we'll just update the last_fetched timestamp
-    const { data: feed, error } = await supabase
-      .from("feeds")
-      .update({
-        last_fetched: new Date().toISOString(),
-      })
-      .eq("id", feedId)
-      .eq("user_id", userId)
-      .select()
-      .single()
+    const feed = await mockDb.updateFeed(feedId, {
+      lastFetched: new Date().toISOString(),
+    })
 
-    if (error) {
-      console.error("Error fetching feed:", error)
-      throw new Error(`Failed to fetch feed: ${error.message}`)
+    if (!feed) {
+      throw new Error("Feed not found")
     }
 
     // Invalidate cache

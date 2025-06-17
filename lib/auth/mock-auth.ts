@@ -2,62 +2,63 @@
 export interface MockUser {
   id: string
   email: string
-  name?: string
+  name: string
 }
 
-class MockAuth {
+class MockAuthService {
   private currentUser: MockUser | null = null
-  private listeners: ((user: MockUser | null) => void)[] = []
+  private isAuthenticated = false
 
-  async signUp(email: string, password: string, name?: string): Promise<MockUser> {
-    // Simulate API delay
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    const user: MockUser = {
-      id: Math.random().toString(36).substr(2, 9),
-      email,
-      name,
+  constructor() {
+    // Auto-login with mock user for preview
+    this.currentUser = {
+      id: "mock-user-1",
+      email: "demo@pensive.app",
+      name: "Demo User",
     }
-
-    this.currentUser = user
-    this.notifyListeners()
-    return user
-  }
-
-  async signIn(email: string, password: string): Promise<MockUser> {
-    // Simulate API delay
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    const user: MockUser = {
-      id: Math.random().toString(36).substr(2, 9),
-      email,
-      name: email.split("@")[0],
-    }
-
-    this.currentUser = user
-    this.notifyListeners()
-    return user
-  }
-
-  async signOut(): Promise<void> {
-    this.currentUser = null
-    this.notifyListeners()
+    this.isAuthenticated = true
   }
 
   getCurrentUser(): MockUser | null {
     return this.currentUser
   }
 
-  onAuthStateChange(callback: (user: MockUser | null) => void) {
-    this.listeners.push(callback)
-    return () => {
-      this.listeners = this.listeners.filter((l) => l !== callback)
-    }
+  isLoggedIn(): boolean {
+    return this.isAuthenticated
   }
 
-  private notifyListeners() {
-    this.listeners.forEach((listener) => listener(this.currentUser))
+  async signIn(email: string, password: string): Promise<MockUser> {
+    // Mock sign in - always succeeds
+    this.currentUser = {
+      id: "mock-user-1",
+      email,
+      name: email.split("@")[0],
+    }
+    this.isAuthenticated = true
+    return this.currentUser
+  }
+
+  async signUp(email: string, password: string, name?: string): Promise<MockUser> {
+    // Mock sign up - always succeeds
+    this.currentUser = {
+      id: "mock-user-1",
+      email,
+      name: name || email.split("@")[0],
+    }
+    this.isAuthenticated = true
+    return this.currentUser
+  }
+
+  async signOut(): Promise<void> {
+    this.currentUser = null
+    this.isAuthenticated = false
+  }
+
+  onAuthStateChange(callback: (user: MockUser | null) => void) {
+    // Mock auth state change listener
+    callback(this.currentUser)
+    return () => {} // Unsubscribe function
   }
 }
 
-export const mockAuth = new MockAuth()
+export const mockAuth = new MockAuthService()

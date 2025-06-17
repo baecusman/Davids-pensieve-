@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/database/supabase-client"
+import { mockDb } from "@/lib/database/mock-db"
 
 export class UserService {
   private static instance: UserService
@@ -11,16 +11,15 @@ export class UserService {
   }
 
   async getUserSettings(userId: string) {
-    const { data: user, error } = await supabase.from("users").select("*").eq("id", userId).single()
+    const user = await mockDb.getUser(userId)
 
-    if (error) {
-      console.error("Error getting user settings:", error)
-      throw new Error(`Failed to get user settings: ${error.message}`)
+    if (!user) {
+      throw new Error("User not found")
     }
 
     return {
-      digestFrequency: user.digest_frequency || "WEEKLY",
-      digestEmail: user.digest_email || "",
+      digestFrequency: user.digestFrequency || "WEEKLY",
+      digestEmail: user.digestEmail || "",
       timezone: user.timezone || "UTC",
       name: user.name || "",
       email: user.email || "",
@@ -28,63 +27,28 @@ export class UserService {
   }
 
   async updateUserSettings(userId: string, settings: any) {
-    const { error } = await supabase
-      .from("users")
-      .update({
-        digest_frequency: settings.digestFrequency,
-        digest_email: settings.digestEmail,
-        timezone: settings.timezone,
-        name: settings.name,
-      })
-      .eq("id", userId)
+    const updatedUser = await mockDb.updateUser(userId, {
+      digestFrequency: settings.digestFrequency,
+      digestEmail: settings.digestEmail,
+      timezone: settings.timezone,
+      name: settings.name,
+    })
 
-    if (error) {
-      console.error("Error updating user settings:", error)
-      throw new Error(`Failed to update user settings: ${error.message}`)
+    if (!updatedUser) {
+      throw new Error("Failed to update user settings")
     }
 
     return settings
   }
 
   async exportUserData(userId: string) {
-    try {
-      // Get all user data from Supabase
-      const [userResult, contentResult, feedsResult, digestsResult, conceptsResult, analysisResult] = await Promise.all(
-        [
-          supabase.from("users").select("*").eq("id", userId).single(),
-          supabase.from("content").select("*").eq("user_id", userId),
-          supabase.from("feeds").select("*").eq("user_id", userId),
-          supabase.from("digests").select("*").eq("user_id", userId),
-          supabase.from("concepts").select("*").eq("user_id", userId),
-          supabase.from("analysis").select("*").eq("user_id", userId),
-        ],
-      )
-
-      return {
-        user: userResult.data,
-        content: contentResult.data || [],
-        feeds: feedsResult.data || [],
-        digests: digestsResult.data || [],
-        concepts: conceptsResult.data || [],
-        analysis: analysisResult.data || [],
-        exportedAt: new Date().toISOString(),
-        version: "1.0",
-      }
-    } catch (error) {
-      console.error("Error exporting user data:", error)
-      throw new Error("Failed to export user data")
-    }
+    return await mockDb.exportUserData(userId)
   }
 
   async deleteUserData(userId: string) {
-    try {
-      // Delete all user data (cascading deletes will handle relationships)
-      await supabase.from("users").delete().eq("id", userId)
-      return true
-    } catch (error) {
-      console.error("Error deleting user data:", error)
-      throw new Error("Failed to delete user data")
-    }
+    // In a real implementation, this would delete all user data
+    console.log(`Would delete all data for user: ${userId}`)
+    return true
   }
 }
 

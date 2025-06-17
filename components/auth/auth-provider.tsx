@@ -2,11 +2,10 @@
 
 import type React from "react"
 import { createContext, useContext, useEffect, useState } from "react"
-import { supabase } from "@/lib/database/supabase-client"
-import type { User } from "@supabase/supabase-js"
+import { mockAuth, type MockUser } from "@/lib/auth/mock-auth"
 
 interface AuthContextType {
-  user: User | null
+  user: MockUser | null
   loading: boolean
   signUp: (email: string, password: string, name?: string) => Promise<void>
   signIn: (email: string, password: string) => Promise<void>
@@ -16,68 +15,29 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<MockUser | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Check if user is already signed in
-    const getInitialUser = async () => {
-      try {
-        const {
-          data: { user },
-        } = await supabase.auth.getUser()
-        setUser(user)
-      } catch (error) {
-        console.error("Error getting initial user:", error)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    getInitialUser()
+    // Initialize with mock user
+    const currentUser = mockAuth.getCurrentUser()
+    setUser(currentUser)
+    setLoading(false)
 
     // Set up auth state change listener
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
-      setUser(session?.user ?? null)
+    const unsubscribe = mockAuth.onAuthStateChange((user) => {
+      setUser(user)
       setLoading(false)
-
-      // Create user profile if it doesn't exist
-      if (event === "SIGNED_IN" && session?.user) {
-        const { data: profile } = await supabase.from("users").select("id").eq("id", session.user.id).single()
-
-        if (!profile) {
-          await supabase.from("users").insert({
-            id: session.user.id,
-            email: session.user.email!,
-            name: session.user.user_metadata?.name || session.user.email!.split("@")[0],
-          })
-        }
-      }
     })
 
-    return () => {
-      subscription.unsubscribe()
-    }
+    return unsubscribe
   }, [])
 
   const signUp = async (email: string, password: string, name?: string) => {
     setLoading(true)
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            name: name || email.split("@")[0],
-          },
-        },
-      })
-
-      if (error) {
-        throw error
-      }
+      const user = await mockAuth.signUp(email, password, name)
+      setUser(user)
     } finally {
       setLoading(false)
     }
@@ -86,24 +46,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = async (email: string, password: string) => {
     setLoading(true)
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
-
-      if (error) {
-        throw error
-      }
+      const user = await mockAuth.signIn(email, password)
+      setUser(user)
     } finally {
       setLoading(false)
     }
   }
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut()
-    if (error) {
-      console.error("Error signing out:", error)
-    }
+    await mockAuth.signOut()
+    setUser(null)
   }
 
   return <AuthContext.Provider value={{ user, loading, signUp, signIn, signOut }}>{children}</AuthContext.Provider>
