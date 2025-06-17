@@ -1,6 +1,4 @@
 "use client"
-
-import type React from "react"
 import { useState, useEffect } from "react"
 import {
   Download,
@@ -173,106 +171,69 @@ export default function SettingsView() {
     }
   }
 
-  const handleExport = async (format: "json" | "csv" = "json") => {
+  const handleExport = async (format: string) => {
     setIsExporting(true)
-    console.log(`📤 Starting ${format.toUpperCase()} export...`)
+    setStatus(`⏳ Exporting data to ${format.toUpperCase()}...`)
 
     try {
       const data = await databaseService.exportData(format)
-      console.log(`📊 Export data size: ${data.length} characters`)
+      const filename = `pensive-data-${new Date().toISOString()}.${format}`
 
-      const blob = new Blob([data], {
-        type: format === "json" ? "application/json" : "text/csv",
-      })
-
-      const url = URL.createObjectURL(blob)
+      // Create a download link
+      const blob = new Blob([data], { type: format === "json" ? "application/json" : "text/csv" })
+      const url = window.URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      const filename = `pensive-export-${new Date().toISOString().split("T")[0]}.${format}`
       a.download = filename
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      window.URL.revokeObjectURL(url)
 
-      console.log(`✅ Export successful: ${filename}`)
-      setStatus(`✅ Data exported as ${format.toUpperCase()} - ${filename}`)
-      setTimeout(() => setStatus(""), 5000)
+      setStatus(`✅ Data exported to ${filename}`)
     } catch (error) {
-      console.error("❌ Export error:", error)
-      setStatus(`❌ Export failed: ${error.message}`)
-      setTimeout(() => setStatus(""), 5000)
+      console.error("Export error:", error)
+      setStatus("❌ Export failed")
     } finally {
       setIsExporting(false)
+      setTimeout(() => setStatus(""), 3000)
     }
   }
 
-  const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    console.log(`📥 Starting import of file: ${file.name} (${file.size} bytes)`)
+  const handleImport = async (event: any) => {
     setIsImporting(true)
-    setStatus("Reading file...")
+    setStatus("⏳ Importing data...")
 
-    const reader = new FileReader()
-    reader.onload = async (e) => {
-      try {
-        const content = e.target?.result as string
-        console.log(`📄 File content length: ${content.length} characters`)
-
-        if (file.name.endsWith(".json")) {
-          const data = JSON.parse(content)
-          console.log("📋 Parsed JSON data:", Object.keys(data))
-
-          if (data.content && Array.isArray(data.content)) {
-            setStatus(`Importing ${data.content.length} items...`)
-            console.log(`📦 Found ${data.content.length} content items to import`)
-
-            let imported = 0
-            let errors = 0
-
-            for (const item of data.content) {
-              try {
-                await databaseService.storeAnalyzedContent({
-                  title: item.title,
-                  url: item.url,
-                  content: item.content,
-                  source: item.source || "imported",
-                  analysis: item.analysis,
-                })
-                imported++
-
-                if (imported % 10 === 0) {
-                  console.log(`📈 Import progress: ${imported}/${data.content.length}`)
-                }
-              } catch (error) {
-                console.error("❌ Error importing item:", error)
-                errors++
-              }
-            }
-
-            console.log(`✅ Import completed: ${imported} successful, ${errors} errors`)
-            setStatus(`✅ Imported ${imported} items${errors > 0 ? ` (${errors} errors)` : ""}`)
-            loadData()
-          } else {
-            console.error("❌ Invalid file format - missing content array")
-            setStatus("❌ Invalid file format - expected content array")
-          }
-        } else {
-          console.error("❌ Unsupported file type")
-          setStatus("❌ Only JSON files are supported for import")
-        }
-      } catch (error) {
-        console.error("❌ Import error:", error)
-        setStatus(`❌ Import failed: ${error.message}`)
-      } finally {
-        setIsImporting(false)
-        setTimeout(() => setStatus(""), 8000)
+    try {
+      const file = event.target.files[0]
+      if (!file) {
+        setStatus("❌ No file selected")
+        return
       }
-    }
 
-    reader.readAsText(file)
+      const reader = new FileReader()
+      reader.onload = async (e: any) => {
+        try {
+          const jsonData = JSON.parse(e.target.result)
+          await databaseService.importData(jsonData)
+          setStatus("✅ Data imported successfully!")
+          loadData() // Refresh data
+        } catch (parseError) {
+          console.error("JSON parsing error:", parseError)
+          setStatus("❌ Error parsing JSON file")
+        } finally {
+          setIsImporting(false)
+          setTimeout(() => setStatus(""), 3000)
+        }
+      }
+
+      reader.readAsText(file)
+    } catch (error) {
+      console.error("Import error:", error)
+      setStatus("❌ Import failed")
+      setIsImporting(false)
+      setTimeout(() => setStatus(""), 3000)
+    }
   }
 
   const handleClearAll = async () => {

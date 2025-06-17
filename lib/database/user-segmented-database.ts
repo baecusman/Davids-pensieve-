@@ -1,5 +1,5 @@
-import { browserDatabase } from "./browser-database"
-import { authManager } from "../auth/auth-manager"
+import { BrowserDatabase } from "./browser-database"
+import { simpleAuth } from "../auth/simple-auth"
 import type { ContentEntity, AnalysisEntity, ConceptEntity, RelationshipEntity } from "./schema"
 
 // Extended schema with user context
@@ -19,9 +19,14 @@ interface UserRelationshipEntity extends RelationshipEntity {
   userId: string
 }
 
+interface UserContent {
+  content: any
+  analysis: any
+}
+
 class UserSegmentedDatabase {
   private static instance: UserSegmentedDatabase
-  private db = browserDatabase
+  private database: BrowserDatabase
 
   static getInstance(): UserSegmentedDatabase {
     if (!UserSegmentedDatabase.instance) {
@@ -30,8 +35,12 @@ class UserSegmentedDatabase {
     return UserSegmentedDatabase.instance
   }
 
+  constructor() {
+    this.database = BrowserDatabase.getInstance()
+  }
+
   private getCurrentUserId(): string {
-    const userId = authManager.getCurrentUserId()
+    const userId = simpleAuth.getCurrentUser()?.id
     if (!userId) {
       throw new Error("User not authenticated")
     }
@@ -58,7 +67,7 @@ class UserSegmentedDatabase {
     }
 
     const hash = this.generateContentHash(data.content)
-    const contentId = this.db.insert<UserContentEntity>("content", {
+    const contentId = this.database.storeContent({
       id: "",
       userId,
       title: data.title,
@@ -93,7 +102,7 @@ class UserSegmentedDatabase {
     const conceptEntities = await this.upsertUserConcepts(data.entities, userId)
 
     // Create analysis
-    const analysisId = this.db.insert<UserAnalysisEntity>("analysis", {
+    const analysisId = this.database.storeAnalysis({
       id: "",
       userId,
       contentId: data.contentId,
@@ -116,7 +125,7 @@ class UserSegmentedDatabase {
     )
 
     // Update analysis with relationships
-    this.db.update<UserAnalysisEntity>("analysis", analysisId, {
+    this.database.updateAnalysis(analysisId, {
       relationships,
     })
 
@@ -136,14 +145,14 @@ class UserSegmentedDatabase {
 
       if (existing) {
         // Update frequency
-        this.db.update<UserConceptEntity>("concepts", existing.id, {
+        this.database.updateConcept(existing.id, {
           frequency: existing.frequency + 1,
           updatedAt: new Date().toISOString(),
         })
         conceptEntities.push({ ...existing, frequency: existing.frequency + 1 })
       } else {
         // Create new concept for user
-        const conceptId = this.db.insert<UserConceptEntity>("concepts", {
+        const conceptId = this.database.storeConcept({
           id: "",
           userId,
           name: entity.name,
@@ -153,7 +162,7 @@ class UserSegmentedDatabase {
           updatedAt: "",
         })
 
-        const newConcept = this.db.findById<UserConceptEntity>("concepts", conceptId)!
+        const newConcept = this.database.findConceptById(conceptId)!
         conceptEntities.push(newConcept)
       }
     }
@@ -174,7 +183,7 @@ class UserSegmentedDatabase {
       const toConcept = concepts.find((c) => c.name === rel.to)
 
       if (fromConcept && toConcept) {
-        const relationshipId = this.db.insert<UserRelationshipEntity>("relationships", {
+        const relationshipId = this.database.storeRelationship({
           id: "",
           userId,
           fromConceptId: fromConcept.id,
@@ -185,7 +194,7 @@ class UserSegmentedDatabase {
           createdAt: "",
         })
 
-        const newRelationship = this.db.findById<UserRelationshipEntity>("relationships", relationshipId)!
+        const newRelationship = this.database.findRelationshipById(relationshipId)!
         relationshipEntities.push(newRelationship)
       }
     }
@@ -196,39 +205,116 @@ class UserSegmentedDatabase {
   // User-specific data retrieval
   getUserContent(): UserContentEntity[] {
     const userId = this.getCurrentUserId()
-    return this.db.findByIndex<UserContentEntity>("content", "userId", userId)
+    return this.database.getUserContent(userId)
   }
 
   getUserAnalyses(): UserAnalysisEntity[] {
     const userId = this.getCurrentUserId()
-    return this.db.findByIndex<UserAnalysisEntity>("analysis", "userId", userId)
+    return this.database.getUserAnalyses(userId)
   }
 
   getUserConcepts(): UserConceptEntity[] {
     const userId = this.getCurrentUserId()
-    return this.db.findByIndex<UserConceptEntity>("concepts", "userId", userId)
+    return this.database.getUserConcepts(userId)
   }
 
   getUserRelationships(): UserRelationshipEntity[] {
     const userId = this.getCurrentUserId()
-    return this.db.findByIndex<UserRelationshipEntity>("relationships", "userId", userId)
+    return this.database.getUserRelationships(userId)
   }
 
-  getUserContentWithAnalysis(): Array<{
-    content: UserContentEntity
-    analysis: UserAnalysisEntity
-  }> {
-    const userContent = this.getUserContent()
-    const results: Array<{ content: UserContentEntity; analysis: UserAnalysisEntity }> = []
+  // Get content with analysis for a specific user (or current user if no userId provided)
+  getUserContentWithAnalysis(userId?: string): UserContent[] {
+    try {
+      const targetUserId = userId || simpleAuth.getCurrentUser()?.id
 
-    userContent.forEach((content) => {
-      const analysis = this.db.findByIndex<UserAnalysisEntity>("analysis", "contentId", content.id)[0]
-      if (analysis && analysis.userId === content.userId) {
-        results.push({ content, analysis })
+      if (!targetUserId) {
+        console.warn("No user ID provided and no current user found")
+        return []
       }
-    })
 
-    return results.sort((a, b) => new Date(b.content.createdAt).getTime() - new Date(a.content.createdAt).getTime())
+      console.log(`Getting content for user: ${targetUserId}`)
+
+      // Get all content for the user
+      const userContent = this.database.getUserContent(targetUserId)
+      console.log(`Found ${userContent.length} content items for user ${targetUserId}`)
+
+      // Get all analyses for the user
+      const userAnalyses = this.database.getUserAnalyses(targetUserId)
+      console.log(`Found ${userAnalyses.length} analyses for user ${targetUserId}`)
+
+      // Combine content with their analyses
+      const contentWithAnalysis: UserContent[] = userContent.map((content) => {
+        const analysis = userAnalyses.find((a) => a.contentId === content.id)
+        return {
+          content,
+          analysis: analysis || null,
+        }
+      })
+
+      console.log(`Combined ${contentWithAnalysis.length} content items with analyses`)
+      return contentWithAnalysis
+    } catch (error) {
+      console.error("Error getting user content with analysis:", error)
+      return []
+    }
+  }
+
+  // Get content for current user
+  getCurrentUserContent(): UserContent[] {
+    const currentUser = simpleAuth.getCurrentUser()
+    if (!currentUser) {
+      console.warn("No current user found")
+      return []
+    }
+
+    return this.getUserContentWithAnalysis(currentUser.id)
+  }
+
+  // Store content for current user
+  storeUserContent(content: any): boolean {
+    try {
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        console.error("No current user found")
+        return false
+      }
+
+      // Add user ID to content
+      const userContent = {
+        ...content,
+        userId: currentUser.id,
+        createdAt: content.createdAt || new Date().toISOString(),
+      }
+
+      return this.database.storeContent(userContent)
+    } catch (error) {
+      console.error("Error storing user content:", error)
+      return false
+    }
+  }
+
+  // Store analysis for current user
+  storeUserAnalysis(analysis: any): boolean {
+    try {
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        console.error("No current user found")
+        return false
+      }
+
+      // Add user ID to analysis
+      const userAnalysis = {
+        ...analysis,
+        userId: currentUser.id,
+        createdAt: analysis.createdAt || new Date().toISOString(),
+      }
+
+      return this.database.storeAnalysis(userAnalysis)
+    } catch (error) {
+      console.error("Error storing user analysis:", error)
+      return false
+    }
   }
 
   getUserConceptGraph(minFrequency = 1): {
@@ -268,61 +354,49 @@ class UserSegmentedDatabase {
     )
   }
 
-  // User statistics
-  getUserStats(): {
-    totalContent: number
-    totalConcepts: number
-    totalRelationships: number
-    bySource: Record<string, number>
-    byPriority: Record<string, number>
-    recentActivity: Array<{ date: string; count: number }>
-  } {
-    const content = this.getUserContent()
-    const concepts = this.getUserConcepts()
-    const relationships = this.getUserRelationships()
-    const analyses = this.getUserAnalyses()
+  // Get user statistics
+  getUserStats(userId?: string): any {
+    try {
+      const targetUserId = userId || simpleAuth.getCurrentUser()?.id
 
-    const bySource: Record<string, number> = {}
-    const byPriority: Record<string, number> = {}
+      if (!targetUserId) {
+        return {
+          totalContent: 0,
+          totalAnalyses: 0,
+          recentContent: 0,
+        }
+      }
 
-    content.forEach((item) => {
-      bySource[item.source] = (bySource[item.source] || 0) + 1
-    })
+      const userContent = this.database.getUserContent(targetUserId)
+      const userAnalyses = this.database.getUserAnalyses(targetUserId)
 
-    analyses.forEach((analysis) => {
-      byPriority[analysis.priority] = (byPriority[analysis.priority] || 0) + 1
-    })
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+      const recentContent = userContent.filter((c) => new Date(c.createdAt) > weekAgo)
 
-    // Calculate recent activity (last 7 days)
-    const recentActivity: Array<{ date: string; count: number }> = []
-    const now = new Date()
-
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000)
-      const dateStr = date.toISOString().split("T")[0]
-      const count = content.filter((c) => c.createdAt.startsWith(dateStr)).length
-
-      recentActivity.push({ date: dateStr, count })
-    }
-
-    return {
-      totalContent: content.length,
-      totalConcepts: concepts.length,
-      totalRelationships: relationships.length,
-      bySource,
-      byPriority,
-      recentActivity,
+      return {
+        totalContent: userContent.length,
+        totalAnalyses: userAnalyses.length,
+        recentContent: recentContent.length,
+        userId: targetUserId,
+      }
+    } catch (error) {
+      console.error("Error getting user stats:", error)
+      return {
+        totalContent: 0,
+        totalAnalyses: 0,
+        recentContent: 0,
+      }
     }
   }
 
   // Admin functions - cross-user operations
   getAllUsersStats(): Record<string, any> {
-    const allUsers = authManager.getAllUsers()
+    const allUsers = simpleAuth.getAllUsers()
     const stats: Record<string, any> = {}
 
     allUsers.forEach((user) => {
-      const userContent = this.db.findByIndex<UserContentEntity>("content", "userId", user.id)
-      const userConcepts = this.db.findByIndex<UserConceptEntity>("concepts", "userId", user.id)
+      const userContent = this.database.getUserContent(user.id)
+      const userConcepts = this.database.getUserConcepts(user.id)
 
       stats[user.username] = {
         userId: user.id,
@@ -361,43 +435,43 @@ class UserSegmentedDatabase {
   // Data migration for existing users
   migrateExistingData(): { success: boolean; migrated: number } {
     try {
-      const adminUser = authManager.getAllUsers().find((u) => u.username === "admin")
+      const adminUser = simpleAuth.getAllUsers().find((u) => u.username === "admin")
       if (!adminUser) {
         return { success: false, migrated: 0 }
       }
 
       // Find content without userId
-      const allContent = this.db.findAll<any>("content")
+      const allContent = this.database.findAllContent()
       const unmigrated = allContent.filter((c) => !c.userId)
 
       let migrated = 0
       unmigrated.forEach((content) => {
-        this.db.update("content", content.id, { userId: adminUser.id })
+        this.database.updateContent(content.id, { userId: adminUser.id })
         migrated++
       })
 
       // Migrate other entities similarly
-      const allAnalyses = this.db.findAll<any>("analysis")
+      const allAnalyses = this.database.findAllAnalyses()
       allAnalyses
         .filter((a) => !a.userId)
         .forEach((analysis) => {
-          this.db.update("analysis", analysis.id, { userId: adminUser.id })
+          this.database.updateAnalysis(analysis.id, { userId: adminUser.id })
           migrated++
         })
 
-      const allConcepts = this.db.findAll<any>("concepts")
+      const allConcepts = this.database.findAllConcepts()
       allConcepts
         .filter((c) => !c.userId)
         .forEach((concept) => {
-          this.db.update("concepts", concept.id, { userId: adminUser.id })
+          this.database.updateConcept(concept.id, { userId: adminUser.id })
           migrated++
         })
 
-      const allRelationships = this.db.findAll<any>("relationships")
+      const allRelationships = this.database.findAllRelationships()
       allRelationships
         .filter((r) => !r.userId)
         .forEach((relationship) => {
-          this.db.update("relationships", relationship.id, { userId: adminUser.id })
+          this.database.updateRelationship(relationship.id, { userId: adminUser.id })
           migrated++
         })
 

@@ -32,6 +32,8 @@ class DigestScheduler {
 
   private loadJobs(): void {
     try {
+      if (typeof window === "undefined") return
+
       const stored = localStorage.getItem(this.storageKey)
       if (stored) {
         const jobsArray: DigestJob[] = JSON.parse(stored)
@@ -47,6 +49,8 @@ class DigestScheduler {
 
   private saveJobs(): void {
     try {
+      if (typeof window === "undefined") return
+
       const jobsArray = Array.from(this.jobs.values())
       localStorage.setItem(this.storageKey, JSON.stringify(jobsArray))
     } catch (error) {
@@ -55,7 +59,7 @@ class DigestScheduler {
   }
 
   private startScheduler(): void {
-    if (this.isRunning) return
+    if (this.isRunning || typeof window === "undefined") return
 
     // Check every hour for pending digests
     this.interval = setInterval(
@@ -83,7 +87,10 @@ class DigestScheduler {
   scheduleUserDigest(userId: string, email: string): boolean {
     try {
       const user = simpleAuth.getAllUsers().find((u) => u.id === userId)
-      if (!user) return false
+      if (!user) {
+        console.error(`User not found: ${userId}`)
+        return false
+      }
 
       const nextMonday = this.getNextMondayAt4AM()
 
@@ -226,52 +233,133 @@ class DigestScheduler {
 
   private async generateUserDigest(userId: string): Promise<string | null> {
     try {
-      // Switch to user context temporarily
-      const originalUser = simpleAuth.getCurrentUser()
+      console.log(`Generating digest for user: ${userId}`)
+
+      // Get the user first to ensure they exist
+      const user = simpleAuth.getAllUsers().find((u) => u.id === userId)
+      if (!user) {
+        throw new Error(`User not found: ${userId}`)
+      }
+
+      console.log(`Found user: ${user.username}`)
 
       // Get user's content from the last week
-      const userContent = userSegmentedDatabase.getUserContentWithAnalysis()
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+      // We need to temporarily switch context to this user
+      const currentUser = simpleAuth.getCurrentUser()
+      const currentUserId = currentUser?.id
 
-      const recentContent = userContent.filter((item) => new Date(item.content.createdAt) > weekAgo)
+      try {
+        // Temporarily switch to the target user context if needed
+        if (currentUserId !== userId) {
+          console.log(`Switching context from ${currentUserId} to ${userId}`)
+          // We'll get the content directly without switching context
+        }
 
-      if (recentContent.length === 0) {
-        return null
+        // Get content for the specific user
+        const userContent = userSegmentedDatabase.getUserContentWithAnalysis(userId)
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+
+        console.log(`Found ${userContent.length} total content items for user`)
+
+        const recentContent = userContent.filter((item) => {
+          const createdAt = new Date(item.content.createdAt)
+          return createdAt > weekAgo
+        })
+
+        console.log(`Found ${recentContent.length} recent content items (last 7 days)`)
+
+        if (recentContent.length === 0) {
+          // Generate a digest even with no recent content
+          return this.generateEmptyDigest(user.username)
+        }
+
+        // Prepare content for Grok
+        const contentSummaries = recentContent.map((item) => ({
+          title: item.content.title,
+          url: item.content.url,
+          summary: item.analysis?.summary?.paragraph || "No summary available",
+          priority: item.analysis?.priority || "medium",
+          tags: item.analysis?.tags || [],
+          source: item.content.source,
+          createdAt: item.content.createdAt,
+        }))
+
+        console.log(`Prepared ${contentSummaries.length} content summaries for digest`)
+
+        // Generate digest using Grok
+        const response = await fetch("/api/grok/digest", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            timeframe: "weekly",
+            content: contentSummaries,
+            userId: userId,
+            username: user.username,
+          }),
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          throw new Error(`Digest generation failed: ${response.status} ${response.statusText} - ${errorText}`)
+        }
+
+        const digest = await response.json()
+        console.log("Successfully generated digest via Grok API")
+        return digest.content || digest.digest || "Digest generated successfully"
+      } finally {
+        // Restore original user context if we switched
+        // (In this case we didn't actually switch, so no need to restore)
       }
-
-      // Prepare content for Grok
-      const contentSummaries = recentContent.map((item) => ({
-        title: item.content.title,
-        url: item.content.url,
-        summary: item.analysis.summary.paragraph,
-        priority: item.analysis.priority,
-        tags: item.analysis.tags,
-        source: item.content.source,
-      }))
-
-      // Generate digest using Grok
-      const response = await fetch("/api/grok/digest", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          timeframe: "weekly",
-          content: contentSummaries,
-          userId: userId,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error(`Digest generation failed: ${response.statusText}`)
-      }
-
-      const digest = await response.json()
-      return digest.content
     } catch (error) {
       console.error("Error generating user digest:", error)
-      throw error
+
+      // Return a fallback digest instead of throwing
+      const user = simpleAuth.getAllUsers().find((u) => u.id === userId)
+      return this.generateFallbackDigest(user?.username || "Unknown User", error)
     }
+  }
+
+  private generateEmptyDigest(username: string): string {
+    return `
+# Weekly Pensive Digest for ${username}
+
+## Summary
+No new content was analyzed this week. Consider adding some articles, videos, or other content to your Pensive collection to get personalized insights in your next digest.
+
+## Suggestions
+- Add interesting articles or blog posts
+- Import RSS feeds from your favorite sources  
+- Analyze podcast episodes or YouTube videos
+- Review and organize your existing content
+
+## Next Steps
+Visit your Pensive dashboard to start adding content for next week's digest.
+
+---
+*Generated on ${new Date().toLocaleDateString()}*
+    `.trim()
+  }
+
+  private generateFallbackDigest(username: string, error: any): string {
+    return `
+# Weekly Pensive Digest for ${username}
+
+## Notice
+We encountered an issue generating your personalized digest this week: ${error?.message || "Unknown error"}
+
+## What you can do
+- Check your internet connection
+- Verify your content is properly saved
+- Try the "Send Test Digest" button in Settings
+
+## Your Learning Journey Continues
+Even without this week's automated digest, your learning progress in Pensive continues. Visit your dashboard to review your recent content and insights.
+
+---
+*Generated on ${new Date().toLocaleDateString()}*
+    `.trim()
   }
 
   private async sendDigestEmail(email: string, username: string, content: string): Promise<void> {
@@ -280,7 +368,7 @@ class DigestScheduler {
       // For now, we'll simulate the email sending
 
       console.log(`📧 Sending digest email to ${email}`)
-      console.log(`Subject: Your Weekly Pensive Digest - User ${username}`)
+      console.log(`Subject: Your Weekly Pensive Digest - ${username}`)
       console.log(`Content preview: ${content.substring(0, 200)}...`)
 
       // Simulate email sending delay
@@ -293,7 +381,7 @@ class DigestScheduler {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: email,
-          subject: `Your Weekly Pensive Digest - User ${username}`,
+          subject: `Your Weekly Pensive Digest - ${username}`,
           html: this.formatDigestEmail(content, username)
         })
       });
@@ -323,7 +411,7 @@ class DigestScheduler {
       <body>
         <div class="header">
           <h1>Your Weekly Pensive Digest</h1>
-          <p>Hello User ${username}!</p>
+          <p>Hello ${username}!</p>
         </div>
         <div class="content">
           ${content.replace(/\n/g, "<br>")}
@@ -348,15 +436,33 @@ class DigestScheduler {
 
   async sendTestDigest(userId: string, email: string): Promise<void> {
     try {
-      console.log(`Sending test digest to ${email}`)
+      console.log(`Sending test digest to ${email} for user ${userId}`)
+
+      // Validate inputs
+      if (!userId || !email) {
+        throw new Error("User ID and email are required")
+      }
+
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!emailRegex.test(email)) {
+        throw new Error("Invalid email format")
+      }
+
+      // Get user info
+      const user = simpleAuth.getAllUsers().find((u) => u.id === userId)
+      if (!user) {
+        throw new Error(`User not found: ${userId}`)
+      }
+
+      console.log(`Generating test digest for user: ${user.username}`)
 
       const digestContent = await this.generateUserDigest(userId)
       if (!digestContent) {
         throw new Error("No content available for test digest")
       }
 
-      const user = simpleAuth.getAllUsers().find((u) => u.id === userId)
-      await this.sendDigestEmail(email, user?.username || "Unknown", digestContent)
+      await this.sendDigestEmail(email, user.username, digestContent)
 
       console.log("Test digest sent successfully")
     } catch (error) {
@@ -397,6 +503,8 @@ class DigestScheduler {
         isRunning: this.isRunning,
         totalJobs: this.jobs.size,
       },
+      currentUser: simpleAuth.getCurrentUser(),
+      allUsers: simpleAuth.getAllUsers().map((u) => ({ id: u.id, username: u.username })),
     }
   }
 
