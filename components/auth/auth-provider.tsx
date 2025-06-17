@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { createContext, useContext, useEffect, useState } from "react"
 import { supabase } from "@/lib/database/supabase-client"
 import type { User } from "@supabase/supabase-js"
@@ -40,9 +39,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Set up auth state change listener
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       setUser(session?.user ?? null)
       setLoading(false)
+
+      // Create user profile if it doesn't exist
+      if (event === "SIGNED_IN" && session?.user) {
+        const { data: profile } = await supabase.from("users").select("id").eq("id", session.user.id).single()
+
+        if (!profile) {
+          await supabase.from("users").insert({
+            id: session.user.id,
+            email: session.user.email!,
+            name: session.user.user_metadata?.name || session.user.email!.split("@")[0],
+          })
+        }
+      }
     })
 
     return () => {

@@ -1,26 +1,16 @@
-/**
- * Simple in-memory cache implementation
- */
 class MemoryCache {
-  private cache: Map<string, { value: any; expires: number }> = new Map()
+  private cache = new Map<string, { value: any; expiry: number }>()
 
-  /**
-   * Set a value in the cache with optional expiration in seconds
-   */
-  set(key: string, value: any, ttl = 300): void {
-    const expires = Date.now() + ttl * 1000
-    this.cache.set(key, { value, expires })
+  set(key: string, value: any, ttlSeconds = 300): void {
+    const expiry = Date.now() + ttlSeconds * 1000
+    this.cache.set(key, { value, expiry })
   }
 
-  /**
-   * Get a value from the cache
-   */
-  get(key: string): any {
+  get<T = any>(key: string): T | null {
     const item = this.cache.get(key)
-
     if (!item) return null
 
-    if (Date.now() > item.expires) {
+    if (Date.now() > item.expiry) {
       this.cache.delete(key)
       return null
     }
@@ -28,37 +18,45 @@ class MemoryCache {
     return item.value
   }
 
-  /**
-   * Get and parse JSON value from cache
-   */
-  getJSON<T>(key: string): T | null {
-    const value = this.get(key)
-    return value ? value : null
+  getJSON<T = any>(key: string): T | null {
+    return this.get<T>(key)
   }
 
-  /**
-   * Delete a value from the cache
-   */
-  del(key: string): boolean {
-    return this.cache.delete(key)
+  del(key: string): void {
+    this.cache.delete(key)
   }
 
-  /**
-   * Clear all values from the cache
-   */
   clear(): void {
     this.cache.clear()
   }
 
-  /**
-   * Get cache stats
-   */
-  stats(): { size: number; keys: string[] } {
-    return {
-      size: this.cache.size,
-      keys: Array.from(this.cache.keys()),
+  size(): number {
+    return this.cache.size
+  }
+
+  keys(): string[] {
+    return Array.from(this.cache.keys())
+  }
+
+  // Clean up expired entries
+  cleanup(): void {
+    const now = Date.now()
+    for (const [key, item] of this.cache.entries()) {
+      if (now > item.expiry) {
+        this.cache.delete(key)
+      }
     }
   }
 }
 
 export const memoryCache = new MemoryCache()
+
+// Clean up expired entries every 5 minutes
+if (typeof window !== "undefined") {
+  setInterval(
+    () => {
+      memoryCache.cleanup()
+    },
+    5 * 60 * 1000,
+  )
+}

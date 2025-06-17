@@ -58,9 +58,8 @@ export class ContentService {
       throw new Error(`Failed to store content: ${error.message}`)
     }
 
-    // Queue analysis job (in a real implementation, this would use a job queue)
-    // For now, we'll just analyze directly
-    this.analyzeContent(userId, content.id, data.title, data.content, data.url)
+    // Analyze content (mock analysis for now)
+    await this.analyzeContent(userId, content.id, data.title, data.content, data.url)
 
     // Invalidate user content cache
     await this.invalidateUserContentCache(userId)
@@ -70,20 +69,20 @@ export class ContentService {
 
   async analyzeContent(userId: string, contentId: string, title: string, content: string, url: string) {
     try {
-      // In a real implementation, this would call the Grok API
-      // For now, we'll just create a mock analysis
+      // Mock analysis - in production, this would call Grok API
       const analysis = {
         summary: {
           sentence: `Analysis of "${title}"`,
-          paragraph: `This content discusses various topics and provides insights into the subject matter.`,
+          paragraph: `This content discusses various topics and provides insights into the subject matter. Key themes include technology, innovation, and industry trends.`,
           isFullRead: false,
         },
         entities: [
           { name: "Technology", type: "concept" },
           { name: "Innovation", type: "concept" },
           { name: "AI", type: "technology" },
+          { name: "Software", type: "technology" },
         ],
-        tags: ["technology", "analysis"],
+        tags: ["technology", "analysis", "innovation"],
         priority: "read",
         confidence: 0.8,
       }
@@ -114,64 +113,67 @@ export class ContentService {
 
   async processEntities(userId: string, contentId: string, entities: any[]) {
     try {
+      const conceptIds: string[] = []
+
       for (const entity of entities) {
-        // Upsert concept
-        const { data: concept, error } = await supabase
+        // Try to find existing concept
+        const { data: existingConcept } = await supabase
           .from("concepts")
-          .upsert(
-            {
+          .select("id, frequency")
+          .eq("user_id", userId)
+          .eq("name", entity.name)
+          .eq("type", entity.type)
+          .single()
+
+        let conceptId: string
+
+        if (existingConcept) {
+          // Update frequency
+          await supabase
+            .from("concepts")
+            .update({ frequency: existingConcept.frequency + 1 })
+            .eq("id", existingConcept.id)
+          conceptId = existingConcept.id
+        } else {
+          // Create new concept
+          const { data: newConcept, error } = await supabase
+            .from("concepts")
+            .insert({
               user_id: userId,
               name: entity.name,
               type: entity.type,
               frequency: 1,
-            },
-            {
-              onConflict: "user_id,name,type",
-              ignoreDuplicates: false,
-            },
-          )
-          .select("id, frequency")
-          .single()
-
-        if (error) {
-          console.error("Error upserting concept:", error)
-          continue
-        }
-
-        // If concept already existed, increment frequency
-        if (concept.frequency > 1) {
-          await supabase
-            .from("concepts")
-            .update({ frequency: concept.frequency + 1 })
-            .eq("id", concept.id)
-        }
-
-        // Create relationships with other entities
-        for (const otherEntity of entities.filter((e) => e.name !== entity.name)) {
-          const { data: otherConcept } = await supabase
-            .from("concepts")
+            })
             .select("id")
-            .eq("user_id", userId)
-            .eq("name", otherEntity.name)
-            .eq("type", otherEntity.type)
             .single()
 
-          if (otherConcept) {
-            await supabase.from("relationships").upsert(
-              {
-                user_id: userId,
-                from_concept_id: concept.id,
-                to_concept_id: otherConcept.id,
-                type: "RELATES_TO",
-                strength: 0.5,
-                content_id: contentId,
-              },
-              {
-                onConflict: "user_id,from_concept_id,to_concept_id,content_id",
-                ignoreDuplicates: true,
-              },
-            )
+          if (error) {
+            console.error("Error creating concept:", error)
+            continue
           }
+          conceptId = newConcept.id
+        }
+
+        conceptIds.push(conceptId)
+      }
+
+      // Create relationships between concepts
+      for (let i = 0; i < conceptIds.length; i++) {
+        for (let j = i + 1; j < conceptIds.length; j++) {
+          await supabase.from("relationships").upsert(
+            {
+              user_id: userId,
+              from_concept_id: conceptIds[i],
+              to_concept_id: conceptIds[j],
+              content_id: contentId,
+              type: "RELATES_TO",
+              strength: 0.5,
+            },
+            {
+              onConflict: "user_id,from_concept_id,to_concept_id,content_id",
+              ignoreDuplicates: true,
+            },
+          )
         }
       }
     } catch (error) {
@@ -220,7 +222,7 @@ export class ContentService {
       query = query.gte("created_at", cutoff.toISOString())
     }
 
-    const { data: content, error, count } = await query
+    const { data: content, error } = await query
 
     if (error) {
       console.error("Error getting user content:", error)
@@ -234,14 +236,14 @@ export class ContentService {
       .eq("user_id", userId)
 
     const result = {
-      items: content.map((item) => ({
+      items: (content || []).map((item) => ({
         id: item.id,
         title: item.title,
         url: item.url,
         content: item.content,
         source: item.source,
         createdAt: item.created_at,
-        analysis: item.analysis[0] || null,
+        analysis: item.analysis?.[0] || null,
       })),
       total: total || 0,
       hasMore: offset + limit < (total || 0),
@@ -280,6 +282,10 @@ export class ContentService {
       return { nodes: [], edges: [] }
     }
 
+    if (!concepts || concepts.length === 0) {
+      return { nodes: [], edges: [] }
+    }
+
     // Calculate max frequency for density calculation
     const maxFrequency = Math.max(...concepts.map((c) => c.frequency), 1)
 
@@ -311,7 +317,7 @@ export class ContentService {
       description: concept.description || `${concept.type} mentioned ${concept.frequency} times`,
     }))
 
-    const edges = relationships.map((rel) => ({
+    const edges = (relationships || []).map((rel) => ({
       id: rel.id,
       source: rel.from_concept_id,
       target: rel.to_concept_id,
@@ -355,7 +361,6 @@ export class ContentService {
 
   private async invalidateUserContentCache(userId: string) {
     // In a real implementation, this would invalidate all cache keys for this user
-    // For now, we'll just clear the memory cache
     memoryCache.clear()
   }
 }

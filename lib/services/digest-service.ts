@@ -30,9 +30,9 @@ export class DigestService {
     }
 
     // Cache for 5 minutes
-    memoryCache.set(cacheKey, digests, 300)
+    memoryCache.set(cacheKey, digests || [], 300)
 
-    return digests
+    return digests || []
   }
 
   async generateDigest(userId: string, type: "weekly" | "monthly" | "quarterly") {
@@ -70,8 +70,9 @@ export class DigestService {
         title: `Your ${type} Digest`,
         content: digestContent,
         content_ids: content.map((c) => c.id),
-        status: "GENERATED",
+        status: "SENT",
         scheduled_at: new Date().toISOString(),
+        sent_at: new Date().toISOString(),
       })
       .select()
       .single()
@@ -98,7 +99,7 @@ export class DigestService {
       const analysis = item.analysis[0]
       html += `
         <div style="margin-bottom: 20px; padding: 15px; border-left: 3px solid #007acc;">
-          <h3><a href="${item.url}">${item.title}</a></h3>
+          <h3><a href="${item.url || "#"}">${item.title}</a></h3>
           <p><strong>Priority:</strong> ${analysis.priority}</p>
           <p>${analysis.summary?.paragraph || "No summary available"}</p>
           <p><small>Source: ${item.source} | ${new Date(item.created_at).toLocaleDateString()}</small></p>

@@ -30,17 +30,17 @@ export class FeedService {
     }
 
     // Cache for 5 minutes
-    memoryCache.set(cacheKey, feeds, 300)
+    memoryCache.set(cacheKey, feeds || [], 300)
 
-    return feeds
+    return feeds || []
   }
 
   async addFeed(
     userId: string,
     data: {
       url: string
-      title: string
-      description: string
+      name: string
+      type?: string
     },
   ) {
     const { data: feed, error } = await supabase
@@ -48,12 +48,9 @@ export class FeedService {
       .insert({
         user_id: userId,
         url: data.url,
-        title: data.title,
-        description: data.description,
+        name: data.name,
+        type: data.type || "RSS",
         is_active: true,
-        fetch_interval: 3600,
-        item_count: 0,
-        error_count: 0,
       })
       .select()
       .single()
@@ -73,19 +70,19 @@ export class FeedService {
     userId: string,
     feedId: string,
     data: {
-      title?: string
-      description?: string
+      name?: string
+      url?: string
       isActive?: boolean
-      fetchInterval?: number
+      type?: string
     },
   ) {
     const { data: feed, error } = await supabase
       .from("feeds")
       .update({
-        title: data.title,
-        description: data.description,
+        name: data.name,
+        url: data.url,
         is_active: data.isActive,
-        fetch_interval: data.fetchInterval,
+        type: data.type,
       })
       .eq("id", feedId)
       .eq("user_id", userId)
