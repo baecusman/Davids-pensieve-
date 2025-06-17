@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/components/auth/auth-provider"
 import { LoginForm } from "@/components/auth/login-form"
+import { PensiveApp } from "@/components/pensive-app"
 
 export default function HomePage() {
   const { user, loading } = useAuth()

@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Download, Upload, User, Bell, Database, TestTube } from "lucide-react"
 import { useAuth } from "@/components/auth/auth-provider"
-import { supabase } from "@/lib/database/supabase-client"
+import { userService } from "@/lib/services/user-service"
 
 export function SettingsView() {
   const { user, signOut } = useAuth()
@@ -33,22 +33,14 @@ export function SettingsView() {
 
     try {
       setLoading(true)
-      const { data: userProfile, error } = await supabase.from("users").select("*").eq("id", user.id).single()
-
-      if (error) {
-        console.error("Error loading profile:", error)
-        return
-      }
-
-      if (userProfile) {
-        setProfile({
-          name: userProfile.name || "",
-          email: userProfile.email || "",
-          digestFrequency: userProfile.digest_frequency || "WEEKLY",
-          digestEmail: userProfile.digest_email || "",
-          timezone: userProfile.timezone || "UTC",
-        })
-      }
+      const userProfile = await userService.getUserSettings(user.id)
+      setProfile({
+        name: userProfile.name || "",
+        email: userProfile.email || "",
+        digestFrequency: userProfile.digestFrequency || "WEEKLY",
+        digestEmail: userProfile.digestEmail || "",
+        timezone: userProfile.timezone || "UTC",
+      })
     } catch (error) {
       console.error("Error loading profile:", error)
     } finally {
@@ -61,24 +53,11 @@ export function SettingsView() {
 
     try {
       setSaving(true)
-      const { error } = await supabase
-        .from("users")
-        .update({
-          name: profile.name,
-          digest_frequency: profile.digestFrequency,
-          digest_email: profile.digestEmail,
-          timezone: profile.timezone,
-        })
-        .eq("id", user.id)
-
-      if (error) {
-        console.error("Error saving profile:", error)
-        alert("Failed to save profile. Please try again.")
-      } else {
-        alert("Profile saved successfully!")
-      }
+      await userService.updateUserSettings(user.id, profile)
+      alert("Profile saved successfully!")
     } catch (error) {
       console.error("Error saving profile:", error)
+      alert("Failed to save profile. Please try again.")
     } finally {
       setSaving(false)
     }
@@ -88,25 +67,8 @@ export function SettingsView() {
     if (!user) return
 
     try {
-      // Get all user data
-      const [contentResult, feedsResult, digestsResult, conceptsResult] = await Promise.all([
-        supabase.from("content").select("*").eq("user_id", user.id),
-        supabase.from("feeds").select("*").eq("user_id", user.id),
-        supabase.from("digests").select("*").eq("user_id", user.id),
-        supabase.from("concepts").select("*").eq("user_id", user.id),
-      ])
-
-      const exportData = {
-        user: profile,
-        content: contentResult.data || [],
-        feeds: feedsResult.data || [],
-        digests: digestsResult.data || [],
-        concepts: conceptsResult.data || [],
-        exportedAt: new Date().toISOString(),
-      }
-
-      // Download as JSON
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" })
+      const data = await userService.exportUserData(user.id)
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
@@ -130,38 +92,32 @@ export function SettingsView() {
     try {
       results.push("🧪 Starting comprehensive tests...")
 
-      // Test 1: Database connectivity
-      results.push("✅ Database connection: OK")
+      // Test 1: Mock database connectivity
+      results.push("✅ Mock database connection: OK")
 
       // Test 2: User profile
-      const { data: userProfile } = await supabase.from("users").select("*").eq("id", user.id).single()
+      const userProfile = await userService.getUserSettings(user.id)
       results.push(`✅ User profile: ${userProfile ? "Found" : "Not found"}`)
 
       // Test 3: Content retrieval
-      const { data: content } = await supabase.from("content").select("*").eq("user_id", user.id).limit(5)
-      results.push(`✅ Content retrieval: ${content?.length || 0} items found`)
+      const content = await userService.exportUserData(user.id)
+      results.push(`✅ Content retrieval: ${content.content?.length || 0} items found`)
 
       // Test 4: Feeds
-      const { data: feeds } = await supabase.from("feeds").select("*").eq("user_id", user.id)
-      results.push(`✅ Feeds: ${feeds?.length || 0} sources configured`)
+      results.push(`✅ Feeds: ${content.feeds?.length || 0} sources configured`)
 
       // Test 5: Concepts
-      const { data: concepts } = await supabase.from("concepts").select("*").eq("user_id", user.id).limit(10)
-      results.push(`✅ Concepts: ${concepts?.length || 0} concepts found`)
+      results.push(`✅ Concepts: ${content.concepts?.length || 0} concepts found`)
 
       // Test 6: Digests
-      const { data: digests } = await supabase.from("digests").select("*").eq("user_id", user.id)
-      results.push(`✅ Digests: ${digests?.length || 0} digests generated`)
+      results.push(`✅ Digests: ${content.digests?.length || 0} digests generated`)
 
       // Test 7: Authentication
       results.push(`✅ Authentication: User ${user.email} authenticated`)
 
-      // Test 8: Data isolation (RLS)
-      const { count: otherUserContent } = await supabase
-        .from("content")
-        .select("*", { count: "exact", head: true })
-        .neq("user_id", user.id)
-      results.push(`✅ Data isolation: ${otherUserContent === 0 ? "Secure" : "Warning: Can see other user data"}`)
+      // Test 8: Local storage
+      const localData = localStorage.getItem("pensive-data")
+      results.push(`✅ Local storage: ${localData ? "Working" : "Empty"}`)
 
       results.push("🎉 All tests completed successfully!")
     } catch (error) {
