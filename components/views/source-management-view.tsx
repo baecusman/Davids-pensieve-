@@ -9,25 +9,40 @@ import { podcastProcessor } from "@/lib/podcast-processor"
 import {
   Trash2,
   ExternalLink,
-  Calendar,
-  Tag,
   Zap,
   BookOpen,
   Scan,
   AlertCircle,
   Rss,
-  Play,
-  Pause,
-  Clock,
-  CheckCircle,
-  XCircle,
   Activity,
   Twitter,
   Headphones,
   Loader2,
+  Plus,
 } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
+import { mockPrisma, type Source } from "@/lib/database/mock-db"
+import { useAuth } from "@/components/auth/auth-provider"
 
 export default function SourceManagementView() {
+  const { user } = useAuth()
+  const [sources, setSources] = useState<Source[]>([])
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const [sourceUrl, setSourceUrl] = useState("")
   const [sourceType, setSourceType] = useState<"one-off" | "subscription">("one-off")
   const [subscriptionType, setSubscriptionType] = useState<"rss" | "twitter" | "podcast">("rss")
@@ -44,6 +59,26 @@ export default function SourceManagementView() {
   const [isDeleting, setIsDeleting] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<"sources" | "feeds" | "twitter" | "podcasts">("sources")
   const [rssStatus, setRssStatus] = useState<any>({})
+
+  useEffect(() => {
+    loadSources()
+  }, [user])
+
+  const loadSources = async () => {
+    if (!user) return
+
+    setIsLoading(true)
+    try {
+      const userSources = await mockPrisma.source.findMany({
+        where: { userId: user.id },
+      })
+      setSources(userSources)
+    } catch (error) {
+      console.error("Error loading sources:", error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   // Memoized data loading for performance
   const loadData = useCallback(() => {
@@ -258,6 +293,55 @@ export default function SourceManagementView() {
     [loadData],
   )
 
+  const handleAddSource = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    if (!user) return
+
+    const formData = new FormData(e.currentTarget)
+    const name = formData.get("name") as string
+    const url = formData.get("url") as string
+    const type = formData.get("type") as "RSS" | "PODCAST" | "TWITTER" | "MANUAL"
+
+    try {
+      await mockPrisma.source.create({
+        data: {
+          userId: user.id,
+          name,
+          url,
+          type,
+        },
+      })
+
+      setIsAddDialogOpen(false)
+      loadSources()
+    } catch (error) {
+      console.error("Error adding source:", error)
+    }
+  }
+
+  const handleToggleSource = async (sourceId: string, isActive: boolean) => {
+    try {
+      await mockPrisma.source.update({
+        where: { id: sourceId },
+        data: { isActive },
+      })
+      loadSources()
+    } catch (error) {
+      console.error("Error updating source:", error)
+    }
+  }
+
+  const handleDeleteSource2 = async (sourceId: string) => {
+    try {
+      await mockPrisma.source.delete({
+        where: { id: sourceId },
+      })
+      loadSources()
+    } catch (error) {
+      console.error("Error deleting source:", error)
+    }
+  }
+
   // Memoized utility functions
   const getPriorityIcon = useMemo(
     () => (priority: string) => {
@@ -298,8 +382,69 @@ export default function SourceManagementView() {
     return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
   }, [])
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+      </div>
+    )
+  }
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Content Sources</h1>
+          <p className="text-gray-600">Manage your RSS feeds, podcasts, and other content sources</p>
+        </div>
+
+        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Source
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add New Source</DialogTitle>
+              <DialogDescription>
+                Add a new RSS feed, podcast, or other content source to your collection.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleAddSource} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Name</Label>
+                <Input id="name" name="name" placeholder="e.g., TechCrunch" required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="url">URL</Label>
+                <Input id="url" name="url" type="url" placeholder="https://example.com/feed.xml" required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="type">Type</Label>
+                <Select name="type" defaultValue="RSS">
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="RSS">RSS Feed</SelectItem>
+                    <SelectItem value="PODCAST">Podcast</SelectItem>
+                    <SelectItem value="TWITTER">Twitter</SelectItem>
+                    <SelectItem value="MANUAL">Manual</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex justify-end space-x-2">
+                <Button type="button" variant="outline" onClick={() => setIsAddDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit">Add Source</Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
       {/* Add Source Form */}
       <div className="bg-white rounded-lg border border-gray-200 p-6 md:p-8 mb-8">
         <h2 className="text-xl md:text-2xl font-bold text-gray-900 mb-6 md:mb-8">Add Content Source</h2>
@@ -549,8 +694,63 @@ export default function SourceManagementView() {
         </div>
       )}
 
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {sources.map((source) => (
+          <Card key={source.id}>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg">{source.name}</CardTitle>
+                <Badge variant={source.type === "RSS" ? "default" : "secondary"}>{source.type}</Badge>
+              </div>
+              <CardDescription className="flex items-center space-x-2">
+                <ExternalLink className="h-3 w-3" />
+                <span className="truncate">{source.url}</span>
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    checked={source.isActive}
+                    onCheckedChange={(checked) => handleToggleSource(source.id, checked)}
+                  />
+                  <span className="text-sm text-gray-600">{source.isActive ? "Active" : "Inactive"}</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleDeleteSource2(source.id)}
+                  className="text-red-600 hover:text-red-700"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+              {source.lastFetched && (
+                <p className="text-xs text-gray-500 mt-2">Last fetched: {source.lastFetched.toLocaleDateString()}</p>
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {sources.length === 0 && (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Rss className="h-12 w-12 text-gray-400 mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No sources yet</h3>
+            <p className="text-gray-600 text-center mb-4">
+              Add your first content source to start building your knowledge base.
+            </p>
+            <Button onClick={() => setIsAddDialogOpen(true)}>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Your First Source
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tabs */}
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      {/* <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
         <div className="border-b border-gray-200">
           <div className="flex overflow-x-auto">
             {[
@@ -575,9 +775,9 @@ export default function SourceManagementView() {
           </div>
         </div>
 
-        <div className="p-4 md:p-8">
-          {/* Sources Tab */}
-          {activeTab === "sources" && (
+        <div className="p-4 md:p-8"> */}
+      {/* Sources Tab */}
+      {/* {activeTab === "sources" && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg md:text-xl font-semibold text-gray-900">
@@ -653,10 +853,10 @@ export default function SourceManagementView() {
                 </div>
               )}
             </div>
-          )}
+          )} */}
 
-          {/* RSS Feeds Tab */}
-          {activeTab === "feeds" && (
+      {/* RSS Feeds Tab */}
+      {/* {activeTab === "feeds" && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg md:text-xl font-semibold text-gray-900">RSS Feeds ({rssFeeds.length})</h3>
@@ -754,10 +954,10 @@ export default function SourceManagementView() {
                 </div>
               )}
             </div>
-          )}
+          )} */}
 
-          {/* Twitter Tab */}
-          {activeTab === "twitter" && (
+      {/* Twitter Tab */}
+      {/* {activeTab === "twitter" && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg md:text-xl font-semibold text-gray-900">
@@ -842,10 +1042,10 @@ export default function SourceManagementView() {
                 </div>
               )}
             </div>
-          )}
+          )} */}
 
-          {/* Podcasts Tab */}
-          {activeTab === "podcasts" && (
+      {/* Podcasts Tab */}
+      {/* {activeTab === "podcasts" && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg md:text-xl font-semibold text-gray-900">
@@ -936,9 +1136,9 @@ export default function SourceManagementView() {
                 </div>
               )}
             </div>
-          )}
-        </div>
-      </div>
+          )} */}
+      {/* </div>
+      </div> */}
     </div>
   )
 }
