@@ -1,34 +1,26 @@
-interface CacheItem {
-  value: any
-  expiresAt: number
-}
-
+/**
+ * Simple in-memory cache implementation
+ */
 class MemoryCache {
-  private cache = new Map<string, CacheItem>()
+  private cache: Map<string, { value: any; expires: number }> = new Map()
 
-  keys = {
-    grokAnalysis: (hash: string) => `grok:${hash}`,
-    rssFeed: (url: string) => `rss:${Buffer.from(url).toString("base64")}`,
-    userContent: (userId: string) => `user:${userId}:content`,
+  /**
+   * Set a value in the cache with optional expiration in seconds
+   */
+  set(key: string, value: any, ttl = 300): void {
+    const expires = Date.now() + ttl * 1000
+    this.cache.set(key, { value, expires })
   }
 
-  async set(key: string, value: any, ttlSeconds = 3600): Promise<void> {
-    const expiresAt = Date.now() + ttlSeconds * 1000
-    this.cache.set(key, { value, expiresAt })
-
-    // Clean up expired items periodically
-    if (Math.random() < 0.01) {
-      // 1% chance
-      this.cleanup()
-    }
-  }
-
-  async get(key: string): Promise<any> {
+  /**
+   * Get a value from the cache
+   */
+  get(key: string): any {
     const item = this.cache.get(key)
 
     if (!item) return null
 
-    if (Date.now() > item.expiresAt) {
+    if (Date.now() > item.expires) {
       this.cache.delete(key)
       return null
     }
@@ -36,24 +28,32 @@ class MemoryCache {
     return item.value
   }
 
-  async getJSON(key: string): Promise<any> {
-    return this.get(key)
+  /**
+   * Get and parse JSON value from cache
+   */
+  getJSON<T>(key: string): T | null {
+    const value = this.get(key)
+    return value ? value : null
   }
 
-  async delete(key: string): Promise<void> {
-    this.cache.delete(key)
+  /**
+   * Delete a value from the cache
+   */
+  del(key: string): boolean {
+    return this.cache.delete(key)
   }
 
-  private cleanup(): void {
-    const now = Date.now()
-    for (const [key, item] of this.cache.entries()) {
-      if (now > item.expiresAt) {
-        this.cache.delete(key)
-      }
-    }
+  /**
+   * Clear all values from the cache
+   */
+  clear(): void {
+    this.cache.clear()
   }
 
-  getStats() {
+  /**
+   * Get cache stats
+   */
+  stats(): { size: number; keys: string[] } {
     return {
       size: this.cache.size,
       keys: Array.from(this.cache.keys()),

@@ -1,22 +1,28 @@
 import type { NextRequest } from "next/server"
-import { createAuthenticatedHandler } from "@/lib/auth/auth-utils"
-import { contentService } from "@/lib/services/content-service"
+import { supabaseContentService } from "@/lib/services/supabase-content-service"
 
-export const GET = createAuthenticatedHandler(async (request: NextRequest, user) => {
+export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
+    const page = parseInt(searchParams.get("page") || "1")
+    const limit = parseInt(searchParams.get("limit") || "50")
+    const source = searchParams.get("source") || undefined
+    const priority = searchParams.get("priority") || undefined
+    const timeframe = searchParams.get("timeframe") as "weekly" | "monthly" | "quarterly" | undefined
 
-    const options = {
-      page: Number.parseInt(searchParams.get("page") || "1"),
-      limit: Number.parseInt(searchParams.get("limit") || "50"),
-      source: searchParams.get("source") || undefined,
-      priority: searchParams.get("priority") || undefined,
-      timeframe: (searchParams.get("timeframe") as any) || undefined,
-    }
+    const offset = (page - 1) * limit
 
-    const content = await contentService.getUserContent(user.id, options)
+    const result = await supabaseContentService.getUserContent({
+      limit,
+      offset,
+      source,
+      priority,
+      timeframe,
+    })
 
-    return new Response(JSON.stringify(content), { headers: { "Content-Type": "application/json" } })
+    return new Response(JSON.stringify(result), {
+      headers: { "Content-Type": "application/json" },
+    })
   } catch (error) {
     console.error("Content list error:", error)
     return new Response(JSON.stringify({ error: "Failed to fetch content" }), {
@@ -24,4 +30,4 @@ export const GET = createAuthenticatedHandler(async (request: NextRequest, user)
       headers: { "Content-Type": "application/json" },
     })
   }
-})
+}
