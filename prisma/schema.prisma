@@ -1,0 +1,233 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // User preferences
+  preferences Json?
+
+  // Relations
+  content       Content[]
+  analyses      Analysis[]
+  concepts      Concept[]
+  relationships Relationship[]
+  feeds         Feed[]
+  digests       Digest[]
+  digestJobs    DigestJob[]
+
+  @@map("users")
+}
+
+model Content {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  url       String
+  content   String   @db.Text
+  source    String
+  hash      String   // Content hash for deduplication
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analyses     Analysis[]
+  relationships Relationship[]
+
+  @@unique([userId, hash])
+  @@index([userId, createdAt])
+  @@index([userId, source])
+  @@index([hash])
+  @@map("content")
+}
+
+model Analysis {
+  id         String   @id @default(cuid())
+  userId     String
+  contentId  String
+  summary    Json     // { sentence, paragraph, isFullRead }
+  entities   Json     // Array of { name, type }
+  tags       String[]
+  priority   Priority @default(READ)
+  fullContent String? @db.Text
+  confidence Float    @default(0.8)
+  createdAt  DateTime @default(now())
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contentId])
+  @@index([userId, priority])
+  @@index([userId, createdAt])
+  @@map("analyses")
+}
+
+model Concept {
+  id          String      @id @default(cuid())
+  userId      String
+  name        String
+  type        ConceptType @default(CONCEPT)
+  description String?
+  frequency   Int         @default(1)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Relations
+  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromRelationships   Relationship[] @relation("FromConcept")
+  toRelationships     Relationship[] @relation("ToConcept")
+
+  @@unique([userId, name, type])
+  @@index([userId, frequency])
+  @@index([userId, type])
+  @@map("concepts")
+}
+
+model Relationship {
+  id            String           @id @default(cuid())
+  userId        String
+  fromConceptId String
+  toConceptId   String
+  type          RelationshipType @default(RELATES_TO)
+  strength      Float            @default(0.5)
+  contentId     String
+  createdAt     DateTime         @default(now())
+
+  // Relations
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromConcept Concept @relation("FromConcept", fields: [fromConceptId], references: [id], onDelete: Cascade)
+  toConcept   Concept @relation("ToConcept", fields: [toConceptId], references: [id], onDelete: Cascade)
+  content     Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fromConceptId, toConceptId, contentId])
+  @@index([userId, fromConceptId])
+  @@index([userId, toConceptId])
+  @@map("relationships")
+}
+
+model Feed {
+  id            String   @id @default(cuid())
+  userId        String
+  url           String
+  title         String
+  description   String?
+  isActive      Boolean  @default(true)
+  fetchInterval Int      @default(3600) // seconds
+  lastFetched   DateTime?
+  lastItemDate  DateTime?
+  itemCount     Int      @default(0)
+  errorCount    Int      @default(0)
+  lastError     String?
+  etag          String?  // For conditional fetching
+  lastModified  String?  // For conditional fetching
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, url])
+  @@index([userId, isActive])
+  @@index([lastFetched])
+  @@map("feeds")
+}
+
+model Digest {
+  id               String    @id @default(cuid())
+  userId           String
+  timeframe        Timeframe
+  title            String
+  summary          String    @db.Text
+  contentIds       String[]
+  trendingConcepts Json      // Array of trending concept data
+  stats            Json      // Digest statistics
+  createdAt        DateTime  @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, timeframe])
+  @@index([userId, createdAt])
+  @@map("digests")
+}
+
+model DigestJob {
+  id           String          @id @default(cuid())
+  userId       String
+  email        String
+  scheduledFor DateTime
+  status       DigestJobStatus @default(PENDING)
+  lastSent     DateTime?
+  error        String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId])
+  @@index([status, scheduledFor])
+  @@map("digest_jobs")
+}
+
+// Cache table for Redis-like functionality in Postgres
+model Cache {
+  key       String   @id
+  value     Json
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("cache")
+}
+
+// Enums
+enum Priority {
+  SKIM
+  READ
+  DEEP_DIVE
+}
+
+enum ConceptType {
+  CONCEPT
+  PERSON
+  ORGANIZATION
+  TECHNOLOGY
+  METHODOLOGY
+}
+
+enum RelationshipType {
+  INCLUDES
+  RELATES_TO
+  IMPLEMENTS
+  USES
+  COMPETES_WITH
+}
+
+enum Timeframe {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+}
+
+enum DigestJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
