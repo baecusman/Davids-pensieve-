@@ -1,7 +1,7 @@
 import { browserDatabase } from "./browser-database"
 import { contentRepository } from "./repositories/content-repository"
 import { conceptRepository } from "./repositories/concept-repository"
-import type { AnalysisEntity, ContentEntity } from "./schema"
+import { simpleAuth } from "../auth/simple-auth"
 
 export class DatabaseService {
   private static instance: DatabaseService
@@ -42,46 +42,63 @@ export class DatabaseService {
         throw new Error("Missing required content fields")
       }
 
+      // Get current user
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        throw new Error("User not authenticated")
+      }
+
       // Check for duplicates using improved deduplication
       const normalizedUrl = this.normalizeUrl(data.url)
-      const existingContent = this.findContentByUrl(normalizedUrl)
+      const existingContent = this.findContentByUrl(normalizedUrl, currentUser.id)
 
       if (existingContent) {
         console.log("Content already exists:", existingContent.title)
-        const analysis = this.contentRepo.getContentWithAnalysis(existingContent.id).analysis
         return {
           contentId: existingContent.id,
-          analysisId: analysis?.id || "",
+          analysisId: existingContent.analysisId || "",
           isNew: false,
         }
       }
 
       // Create content record
-      const contentId = await this.contentRepo.createContent({
+      const contentId = this.generateId()
+      const contentSuccess = this.db.storeContent({
+        id: contentId,
+        userId: currentUser.id,
         title: data.title.trim(),
         url: normalizedUrl,
         content: data.content,
         source: data.source,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
-      // Create analysis record with validation
-      const analysisId = await this.contentRepo.createAnalysis({
+      if (!contentSuccess) {
+        throw new Error("Failed to store content")
+      }
+
+      // Create analysis record
+      const analysisId = this.generateId()
+      const analysisSuccess = this.db.storeAnalysis({
+        id: analysisId,
+        userId: currentUser.id,
         contentId,
         summary: data.analysis.summary,
-        entities: data.analysis.entities.map((e) => ({
+        concepts: data.analysis.entities.map((e) => ({
           name: e.name.trim(),
-          type: e.type as any,
+          type: e.type,
         })),
-        relationships: data.analysis.relationships.map((r) => ({
-          from: r.from.trim(),
-          to: r.to.trim(),
-          type: r.type as any,
-        })),
-        tags: data.analysis.tags.filter((tag) => tag.trim()).map((tag) => tag.trim()),
         priority: data.analysis.priority,
+        tags: data.analysis.tags.filter((tag) => tag.trim()).map((tag) => tag.trim()),
         fullContent: data.analysis.fullContent,
         confidence: Math.max(0, Math.min(1, data.analysis.confidence || 0.8)),
+        createdAt: new Date().toISOString(),
       })
+
+      if (!analysisSuccess) {
+        throw new Error("Failed to store analysis")
+      }
 
       return { contentId, analysisId, isNew: true }
     } catch (error) {
@@ -105,10 +122,10 @@ export class DatabaseService {
     }
   }
 
-  private findContentByUrl(url: string): ContentEntity | null {
+  private findContentByUrl(url: string, userId: string): any | null {
     try {
-      const allContent = this.contentRepo.findAll()
-      return allContent.find((content) => this.normalizeUrl(content.url) === url || content.url === url) || null
+      const userContent = this.db.getUserContent(userId)
+      return userContent.find((content) => this.normalizeUrl(content.url) === url || content.url === url) || null
     } catch (error) {
       console.error("Error finding content by URL:", error)
       return null
@@ -148,7 +165,31 @@ export class DatabaseService {
     hasMore: boolean
   } {
     try {
-      let results = this.contentRepo.getAllWithAnalysis()
+      // Get current user
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        console.warn("No current user found")
+        return { items: [], total: 0, hasMore: false }
+      }
+
+      // Get user's content and analyses
+      const userContent = this.db.getUserContent(currentUser.id)
+      const userAnalyses = this.db.getUserAnalyses(currentUser.id)
+
+      console.log(
+        `Found ${userContent.length} content items and ${userAnalyses.length} analyses for user ${currentUser.id}`,
+      )
+
+      // Combine content with analyses
+      let results = userContent
+        .map((content) => {
+          const analysis = userAnalyses.find((a) => a.contentId === content.id)
+          return {
+            content,
+            analysis,
+          }
+        })
+        .filter((item) => item.analysis) // Only include items with analysis
 
       // Apply filters
       if (options.source) {
@@ -175,20 +216,22 @@ export class DatabaseService {
         url: content.url,
         content: content.content,
         analysis: {
-          summary: analysis.summary,
-          entities: analysis.entities.map((e) => ({ name: e.name, type: e.type })),
-          relationships: analysis.relationships.map((r) => ({
-            from: this.conceptRepo.findById(r.fromConceptId)?.name || "",
-            to: this.conceptRepo.findById(r.toConceptId)?.name || "",
-            type: r.type,
-          })),
-          tags: analysis.tags,
-          priority: analysis.priority,
+          summary: analysis.summary || {
+            sentence: "No summary available",
+            paragraph: "No detailed summary available",
+            isFullRead: false,
+          },
+          entities: analysis.concepts || [],
+          relationships: [], // TODO: Implement relationships
+          tags: analysis.tags || [],
+          priority: analysis.priority || "read",
           fullContent: analysis.fullContent,
         },
         createdAt: content.createdAt,
         source: content.source,
       }))
+
+      console.log(`Returning ${items.length} items out of ${total} total`)
 
       return {
         items,
@@ -220,67 +263,102 @@ export class DatabaseService {
     return cutoffDate
   }
 
-  // Enhanced Concept Management with proper abstraction level filtering
+  // Enhanced Concept Management
   getConceptMapData(abstractionLevel = 50, searchQuery = "") {
     try {
       console.log("DatabaseService: Getting concept map data", { abstractionLevel, searchQuery })
 
-      // Convert abstraction level (0-100) to minimum frequency threshold
-      // Higher abstraction = higher threshold = fewer, more important concepts
-      const maxFrequency = this.getMaxConceptFrequency()
-      const minFrequency = Math.max(1, Math.floor((abstractionLevel / 100) * maxFrequency))
-
-      console.log("Abstraction filtering:", { abstractionLevel, maxFrequency, minFrequency })
-
-      const graphData = this.conceptRepo.getConceptGraph(minFrequency)
-
-      if (!graphData) {
-        console.warn("ConceptRepository returned null graph data")
+      // Get current user
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        console.warn("No current user found")
         return { nodes: [], edges: [] }
       }
 
-      let filteredNodes = graphData.nodes || []
+      // Get user's analyses to extract concepts
+      const userAnalyses = this.db.getUserAnalyses(currentUser.id)
+      console.log(`Found ${userAnalyses.length} analyses for concept extraction`)
 
-      // Apply search filter with fuzzy matching
+      // Extract concepts from analyses
+      const conceptMap = new Map<string, { name: string; type: string; frequency: number; articles: string[] }>()
+
+      userAnalyses.forEach((analysis) => {
+        if (analysis.concepts && Array.isArray(analysis.concepts)) {
+          analysis.concepts.forEach((concept) => {
+            const key = `${concept.name}-${concept.type}`
+            if (conceptMap.has(key)) {
+              const existing = conceptMap.get(key)!
+              existing.frequency += 1
+              existing.articles.push(analysis.contentId)
+            } else {
+              conceptMap.set(key, {
+                name: concept.name,
+                type: concept.type,
+                frequency: 1,
+                articles: [analysis.contentId],
+              })
+            }
+          })
+        }
+      })
+
+      // Convert to nodes array
+      let nodes = Array.from(conceptMap.values()).map((concept, index) => ({
+        id: `concept-${index}`,
+        label: concept.name,
+        type: concept.type,
+        frequency: concept.frequency,
+        density: this.calculateNodeDensity(
+          concept.frequency,
+          Math.max(...Array.from(conceptMap.values()).map((c) => c.frequency)),
+        ),
+        articles: concept.articles,
+        description: `${concept.type} mentioned ${concept.frequency} times`,
+        source: "analyzed" as const,
+      }))
+
+      // Apply abstraction level filtering
+      const maxFrequency = Math.max(...nodes.map((n) => n.frequency), 1)
+      const minFrequency = Math.max(1, Math.floor((abstractionLevel / 100) * maxFrequency))
+      nodes = nodes.filter((node) => node.frequency >= minFrequency)
+
+      // Apply search filter
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase()
-        filteredNodes = filteredNodes.filter(
+        nodes = nodes.filter(
           (node) =>
-            node.name?.toLowerCase().includes(query) ||
+            node.label?.toLowerCase().includes(query) ||
             node.description?.toLowerCase().includes(query) ||
-            node.type?.toLowerCase().includes(query) ||
-            // Fuzzy matching for partial words
-            this.fuzzyMatch(node.name?.toLowerCase() || "", query),
+            node.type?.toLowerCase().includes(query),
         )
       }
 
-      // Filter edges to only include edges between remaining nodes
-      const nodeIds = new Set(filteredNodes.map((node) => node.id))
-      const filteredEdges = (graphData.edges || []).filter(
-        (edge) =>
-          edge.fromConceptId && edge.toConceptId && nodeIds.has(edge.fromConceptId) && nodeIds.has(edge.toConceptId),
-      )
+      // Create simple edges based on co-occurrence
+      const edges: any[] = []
+      const nodeIds = nodes.map((n) => n.id)
 
-      const result = {
-        nodes: filteredNodes.map((node) => ({
-          id: node.id || `node-${Math.random()}`,
-          label: node.name || "Unknown",
-          type: node.type || "concept",
-          density: this.calculateNodeDensity(node.frequency || 0, maxFrequency),
-          articles: [], // Will be populated if needed
-          description: node.description || "",
-          source: "analyzed" as const,
-          frequency: node.frequency || 0,
-        })),
-        edges: filteredEdges.map((edge) => ({
-          id: edge.id || `edge-${Math.random()}`,
-          source: edge.fromConceptId,
-          target: edge.toConceptId,
-          type: edge.type || "co_occurs",
-          weight: Math.max(0, Math.min(1, edge.weight || 0.5)),
-        })),
+      // For now, create edges between concepts that appear in the same articles
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const node1 = nodes[i]
+          const node2 = nodes[j]
+
+          // Check if they share any articles
+          const sharedArticles = node1.articles.filter((article) => node2.articles.includes(article))
+
+          if (sharedArticles.length > 0) {
+            edges.push({
+              id: `edge-${i}-${j}`,
+              source: node1.id,
+              target: node2.id,
+              type: "co_occurs",
+              weight: Math.min(1, sharedArticles.length / Math.max(node1.articles.length, node2.articles.length)),
+            })
+          }
+        }
       }
 
+      const result = { nodes, edges }
       console.log("DatabaseService: Returning", result.nodes.length, "nodes and", result.edges.length, "edges")
       return result
     } catch (error) {
@@ -289,67 +367,9 @@ export class DatabaseService {
     }
   }
 
-  private getMaxConceptFrequency(): number {
-    try {
-      const stats = this.conceptRepo.getConceptStats()
-      return Math.max(1, stats.topConcepts[0]?.frequency || 1)
-    } catch (error) {
-      console.error("Error getting max concept frequency:", error)
-      return 1
-    }
-  }
-
   private calculateNodeDensity(frequency: number, maxFrequency: number): number {
     if (maxFrequency <= 1) return 50
     return Math.min(100, Math.max(10, (frequency / maxFrequency) * 100))
-  }
-
-  private fuzzyMatch(text: string, query: string): boolean {
-    if (query.length < 3) return false
-
-    const words = text.split(/\s+/)
-    return words.some((word) => {
-      if (word.length < query.length) return false
-
-      let matches = 0
-      let queryIndex = 0
-
-      for (let i = 0; i < word.length && queryIndex < query.length; i++) {
-        if (word[i] === query[queryIndex]) {
-          matches++
-          queryIndex++
-        }
-      }
-
-      return matches >= Math.floor(query.length * 0.8)
-    })
-  }
-
-  getConceptDetails(conceptId: string) {
-    try {
-      return this.conceptRepo.getConceptDetails(conceptId)
-    } catch (error) {
-      console.error("Error getting concept details:", error)
-      return { concept: null, relatedConcepts: [], articles: [] }
-    }
-  }
-
-  searchConcepts(query: string) {
-    try {
-      return this.conceptRepo.searchConcepts(query).slice(0, 10)
-    } catch (error) {
-      console.error("Error searching concepts:", error)
-      return []
-    }
-  }
-
-  getTrendingConcepts(timeframe: "weekly" | "monthly" | "quarterly") {
-    try {
-      return this.conceptRepo.getTrendingConcepts(timeframe)
-    } catch (error) {
-      console.error("Error getting trending concepts:", error)
-      return []
-    }
   }
 
   searchContent(
@@ -369,15 +389,22 @@ export class DatabaseService {
     relevanceScore: number
   }> {
     try {
-      const contents = this.contentRepo.searchContent(query)
+      // Get current user
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        return []
+      }
 
-      let results = contents.map((content) => {
-        const { analysis } = this.contentRepo.getContentWithAnalysis(content.id)
+      const userContent = this.db.getUserContent(currentUser.id)
+      const userAnalyses = this.db.getUserAnalyses(currentUser.id)
+
+      let results = userContent.map((content) => {
+        const analysis = userAnalyses.find((a) => a.contentId === content.id)
 
         // Calculate relevance score
         const titleMatch = content.title.toLowerCase().includes(query.toLowerCase()) ? 2 : 0
         const contentMatch = content.content.toLowerCase().includes(query.toLowerCase()) ? 1 : 0
-        const tagMatch = analysis?.tags.some((tag) => tag.toLowerCase().includes(query.toLowerCase())) ? 1.5 : 0
+        const tagMatch = analysis?.tags?.some((tag) => tag.toLowerCase().includes(query.toLowerCase())) ? 1.5 : 0
 
         return {
           id: content.id,
@@ -385,8 +412,8 @@ export class DatabaseService {
           url: content.url,
           analysis: analysis
             ? {
-                summary: { sentence: analysis.summary.sentence },
-                tags: analysis.tags,
+                summary: { sentence: analysis.summary?.sentence || "No summary available" },
+                tags: analysis.tags || [],
               }
             : {
                 summary: { sentence: "No analysis available" },
@@ -401,7 +428,7 @@ export class DatabaseService {
       if (options.sources?.length) {
         const sourceSet = new Set(options.sources)
         results = results.filter((r) => {
-          const content = this.contentRepo.findById(r.id)
+          const content = userContent.find((c) => c.id === r.id)
           return content && sourceSet.has(content.source)
         })
       }
@@ -409,7 +436,7 @@ export class DatabaseService {
       if (options.priorities?.length) {
         const prioritySet = new Set(options.priorities)
         results = results.filter((r) => {
-          const { analysis } = this.contentRepo.getContentWithAnalysis(r.id)
+          const analysis = userAnalyses.find((a) => a.contentId === r.id)
           return analysis && prioritySet.has(analysis.priority)
         })
       }
@@ -433,7 +460,30 @@ export class DatabaseService {
 
   deleteContent(id: string): boolean {
     try {
-      return this.contentRepo.deleteContent(id)
+      // Get current user
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        return false
+      }
+
+      // For now, we'll implement a simple deletion by filtering out the content
+      // This is a simplified approach - in a real implementation, you'd want proper deletion
+      const userContent = this.db.getUserContent(currentUser.id)
+      const filteredContent = userContent.filter((c) => c.id !== id)
+
+      // Store the filtered content back (this is a simplified approach)
+      localStorage.setItem(`pensive-content-v2`, JSON.stringify(this.db.getAllContent().filter((c) => c.id !== id)))
+
+      // Also remove associated analysis
+      const userAnalyses = this.db.getUserAnalyses(currentUser.id)
+      const filteredAnalyses = userAnalyses.filter((a) => a.contentId !== id)
+
+      localStorage.setItem(
+        `pensive-analysis-v2`,
+        JSON.stringify(this.db.getAllAnalyses().filter((a) => a.contentId !== id)),
+      )
+
+      return true
     } catch (error) {
       console.error("Error deleting content:", error)
       return false
@@ -442,17 +492,28 @@ export class DatabaseService {
 
   getContentByTimeframe(timeframe: "weekly" | "monthly" | "quarterly") {
     try {
-      const contents = this.contentRepo.findByTimeframe(timeframe)
+      const cutoffDate = this.getTimeframeCutoff(timeframe)
+      const currentUser = simpleAuth.getCurrentUser()
+
+      if (!currentUser) {
+        return []
+      }
+
+      const userContent = this.db.getUserContent(currentUser.id)
+      const userAnalyses = this.db.getUserAnalyses(currentUser.id)
+
+      const filteredContent = userContent.filter((content) => new Date(content.createdAt) >= cutoffDate)
+
       const results: Array<{
         id: string
         title: string
         url: string
-        analysis: AnalysisEntity
+        analysis: any
         createdAt: string
       }> = []
 
-      contents.forEach((content) => {
-        const { analysis } = this.contentRepo.getContentWithAnalysis(content.id)
+      filteredContent.forEach((content) => {
+        const analysis = userAnalyses.find((a) => a.contentId === content.id)
         if (analysis) {
           results.push({
             id: content.id,
@@ -474,32 +535,53 @@ export class DatabaseService {
   // Enhanced Statistics and Analytics
   getDatabaseStats() {
     try {
-      const contentStats = this.contentRepo.getStats()
-      const conceptStats = this.conceptRepo.getConceptStats()
-      const tableStats = this.db.getTableStats()
+      const currentUser = simpleAuth.getCurrentUser()
+      const dbStats = this.db.getStats()
 
-      // Calculate additional analytics
-      const recentContent = this.getStoredContent({ timeframe: "weekly" })
-      const growthRate = this.calculateGrowthRate()
-      const topSources = this.getTopSources()
-      const conceptGrowth = this.getConceptGrowthTrend()
+      if (!currentUser) {
+        return {
+          content: { totalContent: 0, bySource: {}, byPriority: {}, conceptCount: 0, relationshipCount: 0 },
+          concepts: { totalConcepts: 0, byType: {}, topConcepts: [], averageFrequency: 0 },
+          tables: {},
+          totalRecords: 0,
+          performance: { avgAnalysisTime: 0, successRate: 0 },
+        }
+      }
+
+      const userContent = this.db.getUserContent(currentUser.id)
+      const userAnalyses = this.db.getUserAnalyses(currentUser.id)
+
+      // Calculate user-specific stats
+      const bySource: Record<string, number> = {}
+      const byPriority: Record<string, number> = {}
+
+      userContent.forEach((content) => {
+        bySource[content.source] = (bySource[content.source] || 0) + 1
+      })
+
+      userAnalyses.forEach((analysis) => {
+        byPriority[analysis.priority] = (byPriority[analysis.priority] || 0) + 1
+      })
 
       return {
         content: {
-          ...contentStats,
-          recentCount: recentContent.total,
-          growthRate,
-          topSources,
+          totalContent: userContent.length,
+          bySource,
+          byPriority,
+          conceptCount: 0, // TODO: Calculate from analyses
+          relationshipCount: 0, // TODO: Calculate relationships
         },
         concepts: {
-          ...conceptStats,
-          growthTrend: conceptGrowth,
+          totalConcepts: 0, // TODO: Extract from analyses
+          byType: {},
+          topConcepts: [],
+          averageFrequency: 0,
         },
-        tables: tableStats,
-        totalRecords: this.db.getTotalRecords(),
+        tables: dbStats,
+        totalRecords: userContent.length + userAnalyses.length,
         performance: {
-          avgAnalysisTime: this.calculateAvgAnalysisTime(),
-          successRate: this.calculateSuccessRate(),
+          avgAnalysisTime: 2.5,
+          successRate: userAnalyses.length > 0 ? (userAnalyses.length / userContent.length) * 100 : 100,
         },
       }
     } catch (error) {
@@ -514,171 +596,99 @@ export class DatabaseService {
     }
   }
 
-  private calculateGrowthRate(): number {
+  // Utility methods
+  private generateId(): string {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+  }
+
+  getContentCount(): number {
     try {
-      const now = new Date()
-      const lastWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-      const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000)
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) return 0
 
-      const thisWeek = this.getStoredContent({
-        timeframe: "weekly",
-      }).total
-
-      const previousWeek = this.contentRepo.findAll().filter((content) => {
-        const date = new Date(content.createdAt)
-        return date >= twoWeeksAgo && date < lastWeek
-      }).length
-
-      return previousWeek > 0 ? ((thisWeek - previousWeek) / previousWeek) * 100 : 0
+      return this.db.getUserContent(currentUser.id).length
     } catch {
       return 0
     }
   }
 
-  private getTopSources(): Array<{ source: string; count: number; percentage: number }> {
-    try {
-      const stats = this.contentRepo.getStats()
-      const total = stats.totalContent
-
-      return Object.entries(stats.bySource)
-        .map(([source, count]) => ({
-          source,
-          count,
-          percentage: total > 0 ? (count / total) * 100 : 0,
-        }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5)
-    } catch {
-      return []
-    }
+  clearAllContent(): void {
+    console.log("DatabaseService.clearAllContent called")
+    this.db.clear()
   }
 
-  private getConceptGrowthTrend(): Array<{ period: string; count: number }> {
+  // Database health and maintenance
+  performMaintenance(): void {
+    console.log("Performing database maintenance...")
+    // TODO: Implement maintenance operations
+  }
+
+  backupData(): string {
     try {
-      const periods = []
-      const now = new Date()
-
-      for (let i = 6; i >= 0; i--) {
-        const date = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000)
-        const weekStart = new Date(date.getTime() - date.getDay() * 24 * 60 * 60 * 1000)
-        const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000)
-
-        const content = this.contentRepo.findAll().filter((c) => {
-          const createdAt = new Date(c.createdAt)
-          return createdAt >= weekStart && createdAt < weekEnd
-        })
-
-        periods.push({
-          period: weekStart.toLocaleDateString(),
-          count: content.length,
-        })
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        throw new Error("No current user")
       }
 
-      return periods
-    } catch {
-      return []
-    }
-  }
+      const userContent = this.db.getUserContent(currentUser.id)
+      const userAnalyses = this.db.getUserAnalyses(currentUser.id)
 
-  private calculateAvgAnalysisTime(): number {
-    // This would require storing analysis timestamps
-    // For now, return a placeholder
-    return 2.5 // seconds
-  }
-
-  private calculateSuccessRate(): number {
-    try {
-      const allContent = this.contentRepo.findAll()
-      const withAnalysis = this.contentRepo.getAllWithAnalysis()
-
-      return allContent.length > 0 ? (withAnalysis.length / allContent.length) * 100 : 100
-    } catch {
-      return 0
-    }
-  }
-
-  // Enhanced Database Maintenance
-  vacuum(): { cleaned: number; errors: string[] } {
-    try {
-      const errors: string[] = []
-      let cleaned = 0
-
-      // Remove orphaned relationships
-      const relationships = this.db.findAll("relationships")
-      const conceptIds = new Set(this.db.findAll("concepts").map((c: any) => c.id))
-
-      relationships.forEach((rel: any) => {
-        if (!conceptIds.has(rel.fromConceptId) || !conceptIds.has(rel.toConceptId)) {
-          if (this.db.delete("relationships", rel.id)) {
-            cleaned++
-          } else {
-            errors.push(`Failed to delete orphaned relationship ${rel.id}`)
-          }
-        }
-      })
-
-      // Remove orphaned analyses
-      const analyses = this.db.findAll("analysis")
-      const contentIds = new Set(this.db.findAll("content").map((c: any) => c.id))
-
-      analyses.forEach((analysis: any) => {
-        if (!contentIds.has(analysis.contentId)) {
-          if (this.db.delete("analysis", analysis.id)) {
-            cleaned++
-          } else {
-            errors.push(`Failed to delete orphaned analysis ${analysis.id}`)
-          }
-        }
-      })
-
-      // Remove unused concepts (frequency = 0)
-      const concepts = this.db.findAll("concepts")
-      concepts.forEach((concept: any) => {
-        if (concept.frequency <= 0) {
-          if (this.db.delete("concepts", concept.id)) {
-            cleaned++
-          } else {
-            errors.push(`Failed to delete unused concept ${concept.id}`)
-          }
-        }
-      })
-
-      console.log(`Database vacuum completed: ${cleaned} items cleaned, ${errors.length} errors`)
-      return { cleaned, errors }
-    } catch (error) {
-      console.error("Error during vacuum:", error)
-      return { cleaned: 0, errors: [error instanceof Error ? error.message : "Unknown error"] }
-    }
-  }
-
-  backup(): string {
-    try {
-      return this.db.backup()
+      return JSON.stringify(
+        {
+          version: "2.0.0",
+          exportedAt: new Date().toISOString(),
+          userId: currentUser.id,
+          content: userContent,
+          analyses: userAnalyses,
+        },
+        null,
+        2,
+      )
     } catch (error) {
       console.error("Error creating backup:", error)
       throw new Error("Failed to create backup")
     }
   }
 
-  restore(backup: string) {
+  restoreData(backup: string) {
     try {
-      return this.db.restore(backup)
+      const data = JSON.parse(backup)
+      const currentUser = simpleAuth.getCurrentUser()
+
+      if (!currentUser) {
+        throw new Error("No current user")
+      }
+
+      // Restore content
+      if (data.content && Array.isArray(data.content)) {
+        data.content.forEach((content: any) => {
+          this.db.storeContent({
+            ...content,
+            userId: currentUser.id,
+          })
+        })
+      }
+
+      // Restore analyses
+      if (data.analyses && Array.isArray(data.analyses)) {
+        data.analyses.forEach((analysis: any) => {
+          this.db.storeAnalysis({
+            ...analysis,
+            userId: currentUser.id,
+          })
+        })
+      }
+
+      return { success: true }
     } catch (error) {
       console.error("Error restoring backup:", error)
-      throw new Error("Failed to restore backup")
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      }
     }
   }
 
-  clear(): void {
-    try {
-      this.db.clear()
-    } catch (error) {
-      console.error("Error clearing database:", error)
-      throw new Error("Failed to clear database")
-    }
-  }
-
-  // Export functionality
   exportData(format: "json" | "csv" = "json"): string {
     try {
       const data = this.getStoredContent({ limit: 10000 })
@@ -729,16 +739,23 @@ export class DatabaseService {
   } {
     const checks = {
       storage: true,
-      indexes: true,
-      relationships: true,
+      authentication: true,
+      database: true,
       performance: true,
     }
     const issues: string[] = []
 
     try {
-      // Test basic operations
-      const totalRecords = this.db.getTotalRecords()
+      // Test authentication
+      const currentUser = simpleAuth.getCurrentUser()
+      if (!currentUser) {
+        checks.authentication = false
+        issues.push("No current user authenticated")
+      }
+
+      // Test database operations
       const stats = this.getDatabaseStats()
+      const totalRecords = stats.totalRecords
 
       // Check for performance issues
       if (totalRecords > 10000) {
@@ -746,22 +763,12 @@ export class DatabaseService {
         issues.push("Large dataset may impact performance")
       }
 
-      // Check for orphaned data
-      const vacuumResult = this.vacuum()
-      if (vacuumResult.errors.length > 0) {
-        checks.relationships = false
-        issues.push(...vacuumResult.errors)
-      }
-
       const status = issues.length === 0 ? "healthy" : issues.length < 3 ? "degraded" : "error"
 
       return {
         status,
         checks,
-        stats: {
-          totalRecords,
-          ...stats,
-        },
+        stats,
         issues,
       }
     } catch (error) {
@@ -777,27 +784,6 @@ export class DatabaseService {
   // Version and migration
   getVersion(): string {
     return "2.0.0"
-  }
-
-  migrate(fromVersion: string): { success: boolean; message: string } {
-    try {
-      console.log(`Migrating database from ${fromVersion} to ${this.getVersion()}`)
-
-      // Add migration logic here as schema evolves
-      if (fromVersion === "1.0.0") {
-        // Example migration
-        console.log("Performing migration from 1.0.0 to 2.0.0")
-        // Add any necessary data transformations
-      }
-
-      return { success: true, message: "Migration completed successfully" }
-    } catch (error) {
-      console.error("Migration failed:", error)
-      return {
-        success: false,
-        message: error instanceof Error ? error.message : "Migration failed",
-      }
-    }
   }
 }
 
