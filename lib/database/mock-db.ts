@@ -1,4 +1,4 @@
-// Mock database that simulates Prisma functionality for preview
+// Mock database that simulates production functionality for preview
 export interface User {
   id: string
   email: string
@@ -61,6 +61,7 @@ export interface Digest {
   contentIds: string[]
   status: "DRAFT" | "SCHEDULED" | "SENT" | "FAILED"
   createdAt: Date
+  sentAt?: Date
 }
 
 // In-memory storage for preview
@@ -73,116 +74,103 @@ const storage = {
   digests: new Map<string, Digest>(),
 }
 
-// Mock Prisma client
-export const mockPrisma = {
+// Mock database client
+export const mockDb = {
   user: {
-    create: async (data: { data: Omit<User, "id" | "createdAt"> }) => {
+    create: async (data: Omit<User, "id" | "createdAt">) => {
       const user: User = {
         id: Math.random().toString(36).substr(2, 9),
         createdAt: new Date(),
         digestFrequency: "WEEKLY",
         timezone: "UTC",
-        ...data.data,
+        ...data,
       }
       storage.users.set(user.id, user)
       return user
     },
-    findUnique: async (query: { where: { id?: string; email?: string } }) => {
-      if (query.where.id) {
-        return storage.users.get(query.where.id) || null
-      }
-      if (query.where.email) {
-        for (const user of storage.users.values()) {
-          if (user.email === query.where.email) return user
-        }
+    findByEmail: async (email: string) => {
+      for (const user of storage.users.values()) {
+        if (user.email === email) return user
       }
       return null
     },
-    update: async (data: { where: { id: string }; data: Partial<User> }) => {
-      const user = storage.users.get(data.where.id)
+    findById: async (id: string) => {
+      return storage.users.get(id) || null
+    },
+    update: async (id: string, data: Partial<User>) => {
+      const user = storage.users.get(id)
       if (user) {
-        const updated = { ...user, ...data.data }
-        storage.users.set(user.id, updated)
+        const updated = { ...user, ...data }
+        storage.users.set(id, updated)
         return updated
       }
       throw new Error("User not found")
     },
   },
   content: {
-    create: async (data: { data: Omit<Content, "id" | "createdAt"> }) => {
+    create: async (data: Omit<Content, "id" | "createdAt">) => {
       const content: Content = {
         id: Math.random().toString(36).substr(2, 9),
         createdAt: new Date(),
-        ...data.data,
+        ...data,
       }
       storage.content.set(content.id, content)
       return content
     },
-    findMany: async (query?: { where?: { userId?: string } }) => {
-      const results = Array.from(storage.content.values())
-      if (query?.where?.userId) {
-        return results.filter((c) => c.userId === query.where.userId)
-      }
-      return results
+    findByUserId: async (userId: string) => {
+      return Array.from(storage.content.values()).filter((c) => c.userId === userId)
     },
-    findUnique: async (query: { where: { id: string } }) => {
-      return storage.content.get(query.where.id) || null
+    findById: async (id: string) => {
+      return storage.content.get(id) || null
+    },
+    delete: async (id: string) => {
+      const deleted = storage.content.get(id)
+      storage.content.delete(id)
+      return deleted
     },
   },
   source: {
-    create: async (data: { data: Omit<Source, "id" | "createdAt"> }) => {
+    create: async (data: Omit<Source, "id" | "createdAt">) => {
       const source: Source = {
         id: Math.random().toString(36).substr(2, 9),
         createdAt: new Date(),
         isActive: true,
-        ...data.data,
+        ...data,
       }
       storage.sources.set(source.id, source)
       return source
     },
-    findMany: async (query?: { where?: { userId?: string } }) => {
-      const results = Array.from(storage.sources.values())
-      if (query?.where?.userId) {
-        return results.filter((s) => s.userId === query.where.userId)
-      }
-      return results
+    findByUserId: async (userId: string) => {
+      return Array.from(storage.sources.values()).filter((s) => s.userId === userId)
     },
-    update: async (data: { where: { id: string }; data: Partial<Source> }) => {
-      const source = storage.sources.get(data.where.id)
+    update: async (id: string, data: Partial<Source>) => {
+      const source = storage.sources.get(id)
       if (source) {
-        const updated = { ...source, ...data.data }
-        storage.sources.set(source.id, updated)
+        const updated = { ...source, ...data }
+        storage.sources.set(id, updated)
         return updated
       }
       throw new Error("Source not found")
     },
-    delete: async (query: { where: { id: string } }) => {
-      const deleted = storage.sources.get(query.where.id)
-      storage.sources.delete(query.where.id)
+    delete: async (id: string) => {
+      const deleted = storage.sources.get(id)
+      storage.sources.delete(id)
       return deleted
     },
   },
   concept: {
-    findMany: async (query?: { where?: { userId?: string } }) => {
-      const results = Array.from(storage.concepts.values())
-      if (query?.where?.userId) {
-        return results.filter((c) => c.userId === query.where.userId)
-      }
-      return results
+    findByUserId: async (userId: string) => {
+      return Array.from(storage.concepts.values()).filter((c) => c.userId === userId)
     },
   },
   digest: {
-    findMany: async (query?: { where?: { userId?: string } }) => {
-      const results = Array.from(storage.digests.values())
-      if (query?.where?.userId) {
-        return results.filter((d) => d.userId === query.where.userId)
-      }
-      return results
+    findByUserId: async (userId: string) => {
+      return Array.from(storage.digests.values()).filter((d) => d.userId === userId)
     },
   },
 }
 
-// Initialize with some sample data
+// Initialize with sample data
 export const initializeSampleData = (userId: string) => {
   // Sample sources
   const sampleSources: Omit<Source, "id" | "createdAt">[] = [
@@ -210,7 +198,7 @@ export const initializeSampleData = (userId: string) => {
   ]
 
   sampleSources.forEach((source) => {
-    mockPrisma.source.create({ data: source })
+    mockDb.source.create(source)
   })
 
   // Sample content
@@ -219,7 +207,8 @@ export const initializeSampleData = (userId: string) => {
       userId,
       title: "The Future of AI in Software Development",
       url: "https://example.com/ai-future",
-      content: "Artificial intelligence is revolutionizing how we write, test, and deploy software...",
+      content:
+        "Artificial intelligence is revolutionizing how we write, test, and deploy software. From code generation to automated testing, AI tools are becoming indispensable for modern developers.",
       source: "TechCrunch",
       hash: "hash1",
     },
@@ -227,14 +216,24 @@ export const initializeSampleData = (userId: string) => {
       userId,
       title: "Understanding Large Language Models",
       url: "https://example.com/llm-guide",
-      content: "Large Language Models have transformed natural language processing...",
+      content:
+        "Large Language Models have transformed natural language processing. This comprehensive guide explores how LLMs work, their applications, and their impact on various industries.",
       source: "Stratechery",
       hash: "hash2",
+    },
+    {
+      userId,
+      title: "The Rise of Edge Computing",
+      url: "https://example.com/edge-computing",
+      content:
+        "Edge computing is bringing computation closer to data sources. This shift is enabling real-time processing and reducing latency for critical applications.",
+      source: "The Verge",
+      hash: "hash3",
     },
   ]
 
   sampleContent.forEach((content) => {
-    mockPrisma.content.create({ data: content })
+    mockDb.content.create(content)
   })
 
   // Sample concepts
@@ -260,6 +259,20 @@ export const initializeSampleData = (userId: string) => {
       frequency: 8,
       description: "LLMs like GPT, Claude, etc.",
     },
+    {
+      userId,
+      name: "Edge Computing",
+      type: "TECHNOLOGY",
+      frequency: 6,
+      description: "Distributed computing at the edge",
+    },
+    {
+      userId,
+      name: "Machine Learning",
+      type: "TECHNOLOGY",
+      frequency: 10,
+      description: "ML algorithms and applications",
+    },
   ]
 
   sampleConcepts.forEach((concept) => {
@@ -277,9 +290,21 @@ export const initializeSampleData = (userId: string) => {
       userId,
       type: "WEEKLY",
       title: "Weekly AI & Tech Digest",
-      content: "This week's highlights in AI and technology...",
+      content:
+        "This week's highlights in AI and technology include major breakthroughs in large language models, new developments in edge computing, and innovative applications of machine learning in software development. Key trends show increasing adoption of AI tools in development workflows and growing interest in distributed computing architectures.",
       contentIds: [],
       status: "SENT",
+      sentAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
+    },
+    {
+      userId,
+      type: "WEEKLY",
+      title: "Technology Trends Weekly Summary",
+      content:
+        "Recent developments in the tech industry focus on the convergence of AI and traditional software engineering practices. Notable advances include improved code generation tools, enhanced testing automation, and the emergence of AI-powered development environments.",
+      contentIds: [],
+      status: "SENT",
+      sentAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000), // 14 days ago
     },
   ]
 

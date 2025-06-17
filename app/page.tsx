@@ -4,9 +4,9 @@ import { useAuth } from "@/components/auth/auth-provider"
 import { LoginPage } from "@/components/auth/login-page"
 import { Navigation } from "@/components/navigation"
 import { useState } from "react"
-import { SourceManagementView } from "@/components/views/source-management-view"
+import SourceManagementView from "@/components/views/source-management-view"
 import { DigestsView } from "@/components/views/digests-view"
-import { ConceptMapView } from "@/components/views/concept-map-view"
+import ConceptMapView from "@/components/views/concept-map-view"
 import { SettingsView } from "@/components/views/settings-view"
 
 export default function Home() {
