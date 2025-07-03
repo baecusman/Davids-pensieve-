@@ -1,53 +1,57 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react" // Added useCallback
 import { Search, X, Filter, Download, RefreshCw } from "lucide-react"
 import ConceptMap from "../concept-map"
 import ConceptDetailsSidebar from "../concept-details-sidebar"
 import LoadingSkeleton from "../loading-skeleton"
 import { databaseService } from "@/lib/database/database-service"
+import type { ConceptNode } from "@/lib/concept-map-data"; // For searchResults type
 
 export default function ConceptMapView() {
   const [abstractionLevel, setAbstractionLevel] = useState(30)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
-  const [searchResults, setSearchResults] = useState<any[]>([])
+  const [searchResults, setSearchResults] = useState<ConceptNode[]>([]) // Typed searchResults
   const [showSearchResults, setShowSearchResults] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
-  const [conceptStats, setConceptStats] = useState<any>(null)
+  const [conceptStats, setConceptStats] = useState<any>(null) // Consider more specific type
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters] = useState({
     types: [] as string[],
     minFrequency: 1,
-    source: "all" as "all" | "analyzed" | "historical",
+    source: "all" as "all" | "analyzed" | "historical", // This filter might be less relevant now
   })
 
-  useEffect(() => {
-    loadConceptStats()
-  }, [])
-
-  const loadConceptStats = async () => {
+  const loadConceptStats = useCallback(async () => {
     try {
       setIsLoading(true)
-      const stats = databaseService.getDatabaseStats()
-      setConceptStats(stats.concepts)
+      // getApplicationStats is async and returns a different structure
+      const appStats = await databaseService.getApplicationStats()
+      setConceptStats(appStats.concepts) // Assuming appStats.concepts has the desired stats
     } catch (error) {
       console.error("Error loading concept stats:", error)
+      setConceptStats(null) // Reset or handle error state
     } finally {
       setIsLoading(false)
     }
-  }
+  }, []) // Added dependency array for useCallback
+
+  useEffect(() => {
+    loadConceptStats()
+  }, [loadConceptStats]) // useEffect depends on loadConceptStats
 
   const handleConceptClick = (conceptId: string) => {
     setSelectedNodeId(conceptId)
-    setShowSearchResults(false)
+    setShowSearchResults(false) // Close search results when a node is clicked
   }
 
-  const handleSearch = (query: string) => {
+  const handleSearch = async (query: string) => {
     setSearchQuery(query)
     if (query.trim()) {
       try {
-        const results = databaseService.searchConcepts(query)
+        // searchConcepts is now async
+        const results = await databaseService.searchConcepts(query)
         setSearchResults(results)
         setShowSearchResults(true)
       } catch (error) {
@@ -72,9 +76,10 @@ export default function ConceptMapView() {
     setShowSearchResults(false)
   }
 
-  const handleExportGraph = () => {
+  const handleExportGraph = async () => {
     try {
-      const data = databaseService.getConceptMapData(abstractionLevel, searchQuery)
+      // getConceptMapData is now async
+      const data = await databaseService.getConceptMapData(abstractionLevel, searchQuery)
       const exportData = {
         nodes: data.nodes,
         edges: data.edges,
@@ -98,18 +103,21 @@ export default function ConceptMapView() {
       URL.revokeObjectURL(url)
     } catch (error) {
       console.error("Error exporting graph:", error)
+      // Optionally, show a user-facing error message
     }
   }
 
   const handleRefresh = () => {
     loadConceptStats()
-    // Force re-render of concept map
-    setSelectedNodeId(null)
+    // Force re-render of concept map by resetting some state if ConceptMap depends on it
+    // Or if ConceptMap has its own internal refresh mechanism triggered by prop change
+    setSelectedNodeId(null) // Example: clearing selection might trigger parts of UI to update
   }
 
   const applyFilters = (newFilters: typeof filters) => {
     setFilters(newFilters)
-    // The concept map will automatically update based on the new filters
+    // The concept map component might need to be re-fetched or re-rendered based on these filters
+    // This might involve passing filters to ConceptMap and having it re-fetch data
   }
 
   if (isLoading) {
@@ -136,7 +144,7 @@ export default function ConceptMapView() {
                 <RefreshCw className="h-4 w-4" />
               </button>
               <button
-                onClick={handleExportGraph}
+                onClick={handleExportGraph} // Already async due to internal await
                 className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
                 title="Export graph"
               >
@@ -152,7 +160,7 @@ export default function ConceptMapView() {
               <input
                 type="text"
                 value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
+                onChange={(e) => handleSearch(e.target.value)} // handleSearch is now async
                 placeholder="Search for concepts..."
                 className="w-full pl-8 pr-8 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
@@ -180,11 +188,11 @@ export default function ConceptMapView() {
                       <div
                         className="w-3 h-3 rounded-full border border-white shadow-sm"
                         style={{
-                          backgroundColor: "#3b82f6",
+                          backgroundColor: "#3b82f6", // Example color
                         }}
                       />
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-900 truncate">{result.name}</p>
+                        <p className="text-sm font-medium text-gray-900 truncate">{result.label}</p>
                         <p className="text-xs text-gray-500 capitalize">
                           {result.type} • {result.frequency} mentions
                         </p>
@@ -243,7 +251,7 @@ export default function ConceptMapView() {
                   <input
                     type="range"
                     min="1"
-                    max="10"
+                    max="10" // This max might need adjustment based on actual data
                     value={filters.minFrequency}
                     onChange={(e) => applyFilters({ ...filters, minFrequency: Number(e.target.value) })}
                     className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
@@ -279,21 +287,23 @@ export default function ConceptMapView() {
               <div className="space-y-2 text-xs text-gray-600">
                 <div className="flex justify-between">
                   <span>Total Concepts:</span>
-                  <span className="font-medium">{conceptStats.totalConcepts}</span>
+                  <span className="font-medium">{conceptStats.totalConcepts || 0}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Avg Frequency:</span>
-                  <span className="font-medium">{conceptStats.averageFrequency.toFixed(1)}</span>
+                  <span className="font-medium">{(conceptStats.averageFrequency || 0).toFixed(1)}</span>
                 </div>
-                <div className="space-y-1">
-                  <span className="block">By Type:</span>
-                  {Object.entries(conceptStats.byType).map(([type, count]) => (
-                    <div key={type} className="flex justify-between ml-2">
-                      <span className="capitalize">{type}:</span>
-                      <span>{count}</span>
-                    </div>
-                  ))}
-                </div>
+                {conceptStats.byType && Object.entries(conceptStats.byType).length > 0 && (
+                  <div className="space-y-1">
+                    <span className="block">By Type:</span>
+                    {Object.entries(conceptStats.byType).map(([type, count]) => (
+                      <div key={type} className="flex justify-between ml-2">
+                        <span className="capitalize">{type}:</span>
+                        <span>{count as number}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -306,12 +316,12 @@ export default function ConceptMapView() {
               <li>• Click nodes to explore details</li>
               <li>• Drag nodes to reposition</li>
               <li>• Adjust abstraction to filter</li>
-              <li>• Blue nodes = your analyzed content</li>
+              {/* <li>• Blue nodes = your analyzed content</li> Commenting out if source filter changes */}
             </ul>
           </div>
 
-          {/* Legend */}
-          <div className="mb-4">
+          {/* Legend - Consider if this is still accurate */}
+          {/* <div className="mb-4">
             <h4 className="text-sm font-medium text-gray-700 mb-2">Node Types</h4>
             <div className="space-y-2">
               <div className="flex items-center gap-2">
@@ -323,7 +333,7 @@ export default function ConceptMapView() {
                 <span className="text-xs text-gray-600">Historical</span>
               </div>
             </div>
-          </div>
+          </div> */}
 
           {/* Selected Node Info */}
           {selectedNodeId && (
@@ -339,16 +349,16 @@ export default function ConceptMapView() {
           <ConceptMap
             abstractionLevel={abstractionLevel}
             searchQuery={searchQuery}
-            onNodeSelect={setSelectedNodeId}
+            onNodeSelect={setSelectedNodeId} // Changed from handleConceptClick to setSelectedNodeId for directness
             selectedNodeId={selectedNodeId}
-            filters={filters}
+            filters={filters} // Pass filters to ConceptMap
           />
 
           {/* Concept Details Sidebar */}
           <ConceptDetailsSidebar
             selectedNodeId={selectedNodeId}
             onClose={() => setSelectedNodeId(null)}
-            onConceptClick={handleConceptClick}
+            onConceptClick={handleConceptClick} // For navigating from sidebar
           />
         </div>
       </div>

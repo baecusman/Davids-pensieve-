@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react" // Added useCallback
 import {
   Download,
   Upload,
@@ -24,11 +24,12 @@ import {
   Calendar,
 } from "lucide-react"
 import { databaseService } from "@/lib/database/database-service"
-import { emailScheduler } from "@/lib/email-scheduler"
-import DriveExport from "@/components/google-drive/drive-export"
-import { googleAuth } from "@/lib/auth/google-auth"
-import { digestScheduler } from "@/lib/digest/digest-scheduler"
-import { simpleAuth } from "@/lib/auth/simple-auth"
+import { emailScheduler } from "@/lib/email-scheduler" // Assuming this is still relevant or adapted
+import DriveExport from "@/components/google-drive/drive-export" // Assuming this is still relevant or adapted
+import { googleAuth } from "@/lib/auth/google-auth" // Assuming this is still relevant or adapted
+import { digestScheduler } from "@/lib/digest/digest-scheduler" // Assuming this is still relevant or adapted
+// import { simpleAuth } from "@/lib/auth/simple-auth" // Removed: simpleAuth is deleted
+import { supabase } from "@/lib/auth/supabase" // Import Supabase client for auth
 
 interface AppSettings {
   version: string
@@ -37,13 +38,13 @@ interface AppSettings {
     autoAnalyze: boolean
     theme: "light" | "dark" | "auto"
     notifications: boolean
-    autoBackup: boolean
-    maxStorageSize: number // MB
+    autoBackup: boolean // This might be less relevant with Supabase
+    maxStorageSize: number // MB, also might be less relevant
   }
   performance: {
-    enableCaching: boolean
+    enableCaching: boolean // Client-side caching?
     batchSize: number
-    indexingEnabled: boolean
+    indexingEnabled: boolean // DB indexing is via Supabase
   }
   email: {
     enabled: boolean
@@ -57,10 +58,18 @@ interface AppSettings {
   }
 }
 
+// Define a type for Supabase user if not already available globally
+interface SupabaseUser {
+    id: string;
+    email?: string;
+    user_metadata?: { digestEmail?: string }; // Example, adjust to your actual user_metadata structure
+}
+
+
 export default function SettingsView() {
-  const [databaseStats, setDatabaseStats] = useState<any>(null)
+  const [databaseStats, setDatabaseStats] = useState<any>(null) // Consider specific type
   const [settings, setSettings] = useState<AppSettings | null>(null)
-  const [healthCheck, setHealthCheck] = useState<any>(null)
+  const [healthCheck, setHealthCheck] = useState<any>(null) // Consider specific type
   const [isExporting, setIsExporting] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const [isVacuuming, setIsVacuuming] = useState(false)
@@ -71,28 +80,22 @@ export default function SettingsView() {
 
   const [digestEmail, setDigestEmail] = useState("")
   const [digestStatus, setDigestStatus] = useState<any>(null)
+  const [currentUser, setCurrentUser] = useState<SupabaseUser | null>(null);
 
-  useEffect(() => {
-    loadData()
-    performHealthCheck()
 
-    // Auto-refresh every 30 seconds
-    const interval = setInterval(() => {
-      loadData()
-    }, 30000)
-
-    return () => clearInterval(interval)
-  }, [])
-
-  const loadData = async () => {
+  const loadInitialData = useCallback(async () => {
+    setIsLoading(true);
     try {
-      const stats = databaseService.getDatabaseStats()
-      setDatabaseStats(stats)
+      const { data: { session } } = await supabase.auth.getSession();
+      const user = session?.user as SupabaseUser | null ?? null;
+      setCurrentUser(user);
 
-      // Load settings from localStorage with defaults
-      const storedSettings = localStorage.getItem("pensive-settings-v2")
+      const appStats = await databaseService.getApplicationStats();
+      setDatabaseStats(appStats);
+
+      const storedSettings = localStorage.getItem("pensive-settings-v2");
       const defaultSettings: AppSettings = {
-        version: "2.0.0",
+        version: databaseService.getVersion(), // Get version from service
         preferences: {
           defaultAbstractionLevel: 30,
           autoAnalyze: true,
@@ -115,41 +118,51 @@ export default function SettingsView() {
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           },
         },
+      };
+      setSettings(storedSettings ? { ...defaultSettings, ...JSON.parse(storedSettings) } : defaultSettings);
+
+      if (user?.user_metadata?.digestEmail) {
+        setDigestEmail(user.user_metadata.digestEmail);
+      }
+      if (user) {
+        // Assuming digestScheduler is adapted for Supabase user IDs
+        const userDigestStatus = digestScheduler.getUserDigestStatus(user.id);
+        setDigestStatus(userDigestStatus);
       }
 
-      if (storedSettings) {
-        const parsed = JSON.parse(storedSettings)
-        setSettings({ ...defaultSettings, ...parsed })
-      } else {
-        setSettings(defaultSettings)
-      }
-
-      // Load digest settings
-      const currentUser = simpleAuth.getCurrentUser()
-      if (currentUser?.preferences?.digestEmail) {
-        setDigestEmail(currentUser.preferences.digestEmail)
-      }
-
-      // Load digest status
-      const status = digestScheduler.getUserDigestStatus(currentUser?.id || "")
-      setDigestStatus(status)
     } catch (error) {
-      console.error("Error loading data:", error)
-      setStatus("❌ Error loading settings data")
-      setTimeout(() => setStatus(""), 3000)
+      console.error("Error loading initial data:", error);
+      setStatus("❌ Error loading settings data");
+    } finally {
+        setIsLoading(false);
     }
-  }
+  }, []); // No dependencies, runs once on mount effectively due to outer useEffect
+
+  const [isLoading, setIsLoading] = useState(true); // Added isLoading state
+
+  useEffect(() => {
+    loadInitialData();
+    performHealthCheck(); // performHealthCheck is async now
+
+    const interval = setInterval(() => {
+      loadInitialData(); // Reload all data periodically
+      performHealthCheck();
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [loadInitialData]);
+
 
   const performHealthCheck = async () => {
     try {
-      const health = databaseService.healthCheck()
+      // healthCheck is now async
+      const health = await databaseService.healthCheck()
       setHealthCheck(health)
     } catch (error) {
       console.error("Health check failed:", error)
       setHealthCheck({
         status: "error",
-        checks: {},
-        stats: {},
+        checks: { supabaseConnection: false }, // Updated for new health check structure
         issues: ["Health check failed"],
       })
     }
@@ -159,30 +172,25 @@ export default function SettingsView() {
     try {
       localStorage.setItem("pensive-settings-v2", JSON.stringify(newSettings))
       setSettings(newSettings)
-
-      // Update email scheduler if email settings changed
       if (newSettings.email.enabled) {
         emailScheduler.updateSchedule(newSettings.email.digestSchedule)
       } else {
         emailScheduler.disable()
       }
-
       setStatus("✅ Settings saved")
-      setTimeout(() => setStatus(""), 3000)
     } catch (error) {
       console.error("Error saving settings:", error)
       setStatus("❌ Error saving settings")
-      setTimeout(() => setStatus(""), 3000)
     }
+    setTimeout(() => setStatus(""), 3000)
   }
 
   const handleExport = async (format: "json" | "csv" = "json") => {
     setIsExporting(true)
     try {
-      const data = databaseService.exportData(format)
-      const blob = new Blob([data], {
-        type: format === "json" ? "application/json" : "text/csv",
-      })
+      // exportData is now async
+      const data = await databaseService.exportData(format)
+      const blob = new Blob([data], { type: format === "json" ? "application/json" : "text/csv" })
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
@@ -191,223 +199,180 @@ export default function SettingsView() {
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
-
       setStatus(`✅ Data exported as ${format.toUpperCase()}`)
-      setTimeout(() => setStatus(""), 3000)
     } catch (error) {
       console.error("Export error:", error)
       setStatus("❌ Export failed")
-      setTimeout(() => setStatus(""), 3000)
     } finally {
       setIsExporting(false)
+      setTimeout(() => setStatus(""), 3000)
     }
   }
 
   const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
-
     setIsImporting(true)
     setStatus("Reading file...")
-
     const reader = new FileReader()
     reader.onload = async (e) => {
       try {
         const content = e.target?.result as string
-
         if (file.name.endsWith(".json")) {
           const data = JSON.parse(content)
-
           if (data.content && Array.isArray(data.content)) {
             setStatus(`Importing ${data.content.length} items...`)
-
-            let imported = 0
-            let errors = 0
-
+            let imported = 0, errors = 0
             for (const item of data.content) {
               try {
+                // storeAnalyzedContent is already async
                 await databaseService.storeAnalyzedContent({
-                  title: item.title,
-                  url: item.url,
-                  content: item.content,
-                  source: item.source || "imported",
-                  analysis: item.analysis,
+                  title: item.title, url: item.url, content: item.content,
+                  source: item.source || "imported", analysis: item.analysis,
                 })
                 imported++
-              } catch (error) {
-                console.error("Error importing item:", error)
-                errors++
-              }
+              } catch (err) { errors++; console.error("Error importing item:", err); }
             }
-
             setStatus(`✅ Imported ${imported} items${errors > 0 ? ` (${errors} errors)` : ""}`)
-            loadData()
-          } else {
-            setStatus("❌ Invalid file format")
-          }
-        } else {
-          setStatus("❌ Only JSON files are supported for import")
-        }
-      } catch (error) {
-        console.error("Import error:", error)
-        setStatus("❌ Import failed - invalid file format")
-      } finally {
-        setIsImporting(false)
-        setTimeout(() => setStatus(""), 5000)
-      }
+            loadInitialData() // Reload data
+          } else { setStatus("❌ Invalid file format") }
+        } else { setStatus("❌ Only JSON files are supported") }
+      } catch (err) { console.error("Import error:", err); setStatus("❌ Import failed - invalid file") }
+      finally { setIsImporting(false); setTimeout(() => setStatus(""), 5000) }
     }
-
     reader.readAsText(file)
   }
 
   const handleVacuum = async () => {
     setIsVacuuming(true)
-    setStatus("🧹 Cleaning database...")
-
-    try {
-      const result = databaseService.vacuum()
-      setStatus(
-        `✅ Cleaned ${result.cleaned} items${result.errors.length > 0 ? ` (${result.errors.length} errors)` : ""}`,
-      )
-      loadData()
-      performHealthCheck()
-    } catch (error) {
-      console.error("Vacuum error:", error)
-      setStatus("❌ Database cleanup failed")
-    } finally {
-      setIsVacuuming(false)
-      setTimeout(() => setStatus(""), 5000)
-    }
+    setStatus("🧹 Cleaning database (Operation N/A with Supabase)...")
+    console.warn("Vacuum operation is not directly applicable from client with Supabase. Database optimization is handled by Supabase/PostgreSQL.")
+    // const result = await databaseService.vacuum() // vacuum was removed
+    // setStatus(`✅ Cleaned ${result.cleaned} items${result.errors.length > 0 ? ` (${result.errors.length} errors)` : ""}`)
+    setTimeout(() => {
+        setStatus("Info: Database cleaning is managed by Supabase.")
+        loadInitialData() // Reload data
+        performHealthCheck()
+        setIsVacuuming(false)
+    }, 3000);
   }
 
   const handleClearAll = async () => {
-    if (!confirm("Are you sure you want to clear ALL data? This cannot be undone.")) {
+    if (!confirm("Are you sure you want to clear ALL data? This cannot be undone via this interface easily with Supabase.")) {
       return
     }
+    setStatus("Clearing data (Operation N/A with Supabase from client)...")
+    console.warn("Clear All operation is not directly applicable from client with Supabase. This would require direct DB operations or specific backend endpoint.")
+    // await databaseService.clear() // clear was removed
+    setTimeout(() => {
+        setStatus("Info: Clearing all data should be done via Supabase console or backend.")
+        loadInitialData() // Reload data
+        performHealthCheck()
+    }, 3000);
+  }
 
+  const handleSaveDigestEmail = async () => {
+    if (!currentUser || !digestEmail) {
+      setStatus("❌ User not logged in or email is empty.");
+      setTimeout(() => setStatus(""), 3000);
+      return;
+    }
     try {
-      databaseService.clear()
-      setStatus("✅ All data cleared")
-      loadData()
-      performHealthCheck()
+      // Update user_metadata in Supabase
+      const { error } = await supabase.auth.updateUser({
+        data: { digestEmail: digestEmail } // 'data' is Supabase's field for user_metadata
+      });
+      if (error) throw error;
+
+      // Re-fetch user to confirm update
+      const { data: { user: updatedUser } } = await supabase.auth.getUser();
+      setCurrentUser(updatedUser as SupabaseUser | null);
+
+
+      const success = digestScheduler.scheduleUserDigest(currentUser.id, digestEmail);
+      if (success) {
+        setStatus("✅ Weekly digest scheduled/updated.");
+        loadInitialData(); // Refresh status
+      } else {
+        setStatus("❌ Failed to schedule digest.");
+      }
     } catch (error) {
-      console.error("Clear error:", error)
-      setStatus("❌ Failed to clear data")
-    } finally {
-      setTimeout(() => setStatus(""), 3000)
+      console.error("Error saving digest email:", error);
+      setStatus("❌ Error saving digest email.");
     }
-  }
-
-  const handleSaveDigestEmail = () => {
-    if (!digestEmail) {
-      setStatus("❌ Please enter an email address")
-      setTimeout(() => setStatus(""), 3000)
-      return
-    }
-
-    const currentUser = simpleAuth.getCurrentUser()
-    if (!currentUser) return
-
-    // Update user email
-    simpleAuth.updateUserEmail(digestEmail)
-
-    // Schedule digest
-    const success = digestScheduler.scheduleUserDigest(currentUser.id, digestEmail)
-
-    if (success) {
-      setStatus("✅ Weekly digest scheduled for Mondays at 4 AM ET")
-      loadData() // Refresh status
-    } else {
-      setStatus("❌ Failed to schedule digest")
-    }
-
-    setTimeout(() => setStatus(""), 5000)
-  }
+    setTimeout(() => setStatus(""), 5000);
+  };
 
   const handleUnscheduleDigest = () => {
-    const currentUser = simpleAuth.getCurrentUser()
-    if (!currentUser) return
-
-    const success = digestScheduler.unscheduleUserDigest(currentUser.id)
-
+    if (!currentUser) return;
+    const success = digestScheduler.unscheduleUserDigest(currentUser.id);
     if (success) {
-      setStatus("✅ Weekly digest unscheduled")
-      setDigestStatus(null)
+      setStatus("✅ Weekly digest unscheduled");
+      setDigestStatus(null); // Clear local status
+      // Optionally clear from Supabase user_metadata if that's the desired behavior
+      // supabase.auth.updateUser({ data: { digestEmail: null } });
     } else {
-      setStatus("❌ Failed to unschedule digest")
+      setStatus("❌ Failed to unschedule digest");
     }
-
-    setTimeout(() => setStatus(""), 3000)
-  }
+    setTimeout(() => setStatus(""), 3000);
+  };
 
   const handleTestDigest = async () => {
-    if (!digestEmail) {
-      setStatus("❌ Please enter an email address first")
-      setTimeout(() => setStatus(""), 3000)
-      return
+    if (!currentUser || !digestEmail) {
+        setStatus("❌ User not available or email not set for digest.");
+        setTimeout(() => setStatus(""), 3000);
+        return;
     }
-
-    const currentUser = simpleAuth.getCurrentUser()
-    if (!currentUser) return
-
     try {
       setStatus("📧 Generating and sending test digest...")
+      // Assuming digestScheduler.sendTestDigest is adapted for Supabase user ID
       await digestScheduler.sendTestDigest(currentUser.id, digestEmail)
       setStatus("✅ Test digest sent successfully!")
-      setTimeout(() => setStatus(""), 5000)
     } catch (error) {
       console.error("Test digest error:", error)
       setStatus("❌ Failed to send test digest")
-      setTimeout(() => setStatus(""), 5000)
     }
+    setTimeout(() => setStatus(""), 5000)
   }
 
   const handleTestEmail = async () => {
     if (!settings?.email.address) {
-      setStatus("❌ Please enter an email address first")
+      setStatus("❌ Please enter an email address in general settings first.")
       setTimeout(() => setStatus(""), 3000)
       return
     }
-
     try {
-      setStatus("📧 Sending test digest...")
+      setStatus("📧 Sending test email...")
+      // Assuming emailScheduler.sendTestDigest is generic enough
       await emailScheduler.sendTestDigest(settings.email.address)
-      setStatus("✅ Test digest sent successfully!")
-      setTimeout(() => setStatus(""), 5000)
+      setStatus("✅ Test email sent successfully!")
     } catch (error) {
       console.error("Test email error:", error)
-      setStatus("❌ Failed to send test digest")
-      setTimeout(() => setStatus(""), 5000)
+      setStatus("❌ Failed to send test email")
+    }
+    setTimeout(() => setStatus(""), 5000)
+  }
+
+
+  const getStatusColor = (statusKey: string) => { // statusKey instead of status
+    switch (statusKey) {
+      case "healthy": return "text-green-600 bg-green-50 border-green-200";
+      case "degraded": return "text-yellow-600 bg-yellow-50 border-yellow-200";
+      case "error": return "text-red-600 bg-red-50 border-red-200";
+      default: return "text-gray-600 bg-gray-50 border-gray-200";
     }
   }
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "healthy":
-        return "text-green-600 bg-green-50 border-green-200"
-      case "degraded":
-        return "text-yellow-600 bg-yellow-50 border-yellow-200"
-      case "error":
-        return "text-red-600 bg-red-50 border-red-200"
-      default:
-        return "text-gray-600 bg-gray-50 border-gray-200"
+  const getStatusIcon = (statusKey: string) => { // statusKey instead of status
+    switch (statusKey) {
+      case "healthy": return <CheckCircle className="h-4 w-4" />;
+      case "degraded": return <AlertTriangle className="h-4 w-4" />;
+      case "error": return <XCircle className="h-4 w-4" />;
+      default: return <Info className="h-4 w-4" />;
     }
   }
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case "healthy":
-        return <CheckCircle className="h-4 w-4" />
-      case "degraded":
-        return <AlertTriangle className="h-4 w-4" />
-      case "error":
-        return <XCircle className="h-4 w-4" />
-      default:
-        return <Info className="h-4 w-4" />
-    }
-  }
-
-  if (!databaseStats || !settings) {
+  if (isLoading || !databaseStats || !settings) { // Added isLoading to condition
     return (
       <div className="max-w-4xl mx-auto px-4 py-8">
         <div className="flex items-center justify-center h-64">
@@ -417,6 +382,16 @@ export default function SettingsView() {
       </div>
     )
   }
+
+  // Null checks for databaseStats properties before rendering
+  const totalContent = databaseStats.content?.totalContent || 0;
+  const recentCount = databaseStats.content?.recentCount || 0;
+  const totalConcepts = databaseStats.concepts?.totalConcepts || 0;
+  const averageFrequency = databaseStats.concepts?.averageFrequency || 0;
+  const growthRate = databaseStats.content?.growthRate || 0; // Assuming growthRate could be on content
+  const successRate = databaseStats.performance?.successRate || 0; // Assuming performance might be undefined
+  const topSources = databaseStats.content?.topSources || [];
+  const totalRecords = databaseStats.totalRecords || 0; // If totalRecords was part of the old structure
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
@@ -430,11 +405,9 @@ export default function SettingsView() {
       {status && (
         <div
           className={`mb-6 p-3 rounded-lg border ${
-            status.includes("❌")
-              ? "bg-red-50 border-red-200 text-red-800"
-              : status.includes("✅")
-                ? "bg-green-50 border-green-200 text-green-800"
-                : "bg-blue-50 border-blue-200 text-blue-800"
+            status.includes("❌") ? "bg-red-50 border-red-200 text-red-800"
+              : status.includes("✅") ? "bg-green-50 border-green-200 text-green-800"
+              : "bg-blue-50 border-blue-200 text-blue-800"
           }`}
         >
           {status}
@@ -448,7 +421,7 @@ export default function SettingsView() {
             {getStatusIcon(healthCheck.status)}
             <span className="font-medium capitalize">System Status: {healthCheck.status}</span>
           </div>
-          {healthCheck.issues.length > 0 && (
+          {healthCheck.issues && healthCheck.issues.length > 0 && (
             <ul className="text-sm mt-2 space-y-1">
               {healthCheck.issues.map((issue: string, index: number) => (
                 <li key={index}>• {issue}</li>
@@ -498,8 +471,8 @@ export default function SettingsView() {
                     <FileText className="h-5 w-5 text-blue-600" />
                     <span className="font-medium text-blue-900">Total Content</span>
                   </div>
-                  <div className="text-2xl font-bold text-blue-900">{databaseStats.content.totalContent}</div>
-                  <div className="text-sm text-blue-700">{databaseStats.content.recentCount} this week</div>
+                  <div className="text-2xl font-bold text-blue-900">{totalContent}</div>
+                  <div className="text-sm text-blue-700">{recentCount} this week</div>
                 </div>
 
                 <div className="bg-green-50 p-4 rounded-lg border border-green-200">
@@ -507,9 +480,9 @@ export default function SettingsView() {
                     <Users className="h-5 w-5 text-green-600" />
                     <span className="font-medium text-green-900">Concepts</span>
                   </div>
-                  <div className="text-2xl font-bold text-green-900">{databaseStats.concepts.totalConcepts}</div>
+                  <div className="text-2xl font-bold text-green-900">{totalConcepts}</div>
                   <div className="text-sm text-green-700">
-                    Avg: {databaseStats.concepts.averageFrequency.toFixed(1)} mentions
+                    Avg: {averageFrequency.toFixed(1)} mentions
                   </div>
                 </div>
 
@@ -519,10 +492,10 @@ export default function SettingsView() {
                     <span className="font-medium text-purple-900">Growth Rate</span>
                   </div>
                   <div className="text-2xl font-bold text-purple-900">
-                    {databaseStats.content.growthRate > 0 ? "+" : ""}
-                    {databaseStats.content.growthRate.toFixed(1)}%
+                    {growthRate > 0 ? "+" : ""}
+                    {growthRate.toFixed(1)}%
                   </div>
-                  <div className="text-sm text-purple-700">vs last week</div>
+                  <div className="text-sm text-purple-700">vs last week (N/A)</div>
                 </div>
 
                 <div className="bg-orange-50 p-4 rounded-lg border border-orange-200">
@@ -531,9 +504,9 @@ export default function SettingsView() {
                     <span className="font-medium text-orange-900">Success Rate</span>
                   </div>
                   <div className="text-2xl font-bold text-orange-900">
-                    {databaseStats.performance.successRate.toFixed(1)}%
+                    {successRate.toFixed(1)}%
                   </div>
-                  <div className="text-sm text-orange-700">analysis success</div>
+                  <div className="text-sm text-orange-700">analysis success (N/A)</div>
                 </div>
               </div>
 
@@ -541,7 +514,7 @@ export default function SettingsView() {
               <div className="bg-white border border-gray-200 rounded-lg p-6">
                 <h3 className="text-lg font-semibold mb-4">Top Content Sources</h3>
                 <div className="space-y-3">
-                  {databaseStats.content.topSources.map((source: any, index: number) => (
+                  {topSources.map((source: any, index: number) => (
                     <div key={source.source} className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-medium text-sm">
@@ -567,176 +540,71 @@ export default function SettingsView() {
           {activeTab === "data" && (
             <div className="space-y-6">
               <h3 className="text-xl font-semibold">Data Management</h3>
-
-              {/* Storage Info */}
               <div className="bg-gray-50 p-4 rounded-lg">
                 <h4 className="font-medium mb-3">Storage Information</h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                  <div>
-                    <span className="text-gray-600">Total Records:</span>
-                    <div className="font-medium">{databaseStats.totalRecords}</div>
-                  </div>
-                  <div>
-                    <span className="text-gray-600">Storage Type:</span>
-                    <div className="font-medium">Browser Database</div>
-                  </div>
-                  <div>
-                    <span className="text-gray-600">Version:</span>
-                    <div className="font-medium">{databaseService.getVersion()}</div>
-                  </div>
+                  <div> <span className="text-gray-600">Total Records (Content):</span> <div className="font-medium">{totalContent}</div> </div>
+                  <div> <span className="text-gray-600">Storage Type:</span> <div className="font-medium">Supabase Cloud</div> </div>
+                  <div> <span className="text-gray-600">Version:</span> <div className="font-medium">{settings.version}</div> </div>
                 </div>
               </div>
-
-              {/* Export/Import Actions */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <button
-                  onClick={() => handleExport("json")}
-                  disabled={isExporting}
-                  className="flex items-center justify-center gap-2 p-4 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
-                >
+                <button onClick={() => handleExport("json")} disabled={isExporting} className="flex items-center justify-center gap-2 p-4 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
                   <Download className="h-5 w-5 text-green-600" />
-                  <div className="text-left">
-                    <p className="font-medium">Export JSON</p>
-                    <p className="text-sm text-gray-600">Full data export</p>
-                  </div>
+                  <div> <p className="font-medium">Export JSON</p> <p className="text-sm text-gray-600">Full data export</p> </div>
                 </button>
-
-                <button
-                  onClick={() => handleExport("csv")}
-                  disabled={isExporting}
-                  className="flex items-center justify-center gap-2 p-4 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
-                >
+                <button onClick={() => handleExport("csv")} disabled={isExporting} className="flex items-center justify-center gap-2 p-4 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
                   <Download className="h-5 w-5 text-blue-600" />
-                  <div className="text-left">
-                    <p className="font-medium">Export CSV</p>
-                    <p className="text-sm text-gray-600">Spreadsheet format</p>
-                  </div>
+                  <div> <p className="font-medium">Export CSV</p> <p className="text-sm text-gray-600">Spreadsheet format</p> </div>
                 </button>
-
                 <label className="flex items-center justify-center gap-2 p-4 border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
                   <Upload className="h-5 w-5 text-blue-600" />
-                  <div className="text-left">
-                    <p className="font-medium">Import Data</p>
-                    <p className="text-sm text-gray-600">Upload JSON file</p>
-                  </div>
+                  <div> <p className="font-medium">Import Data</p> <p className="text-sm text-gray-600">Upload JSON file</p> </div>
                   <input type="file" accept=".json" onChange={handleImport} className="hidden" disabled={isImporting} />
                 </label>
-
-                <button
-                  onClick={handleClearAll}
-                  className="flex items-center justify-center gap-2 p-4 border border-red-300 rounded-lg hover:bg-red-50 text-red-600"
-                >
+                <button onClick={handleClearAll} className="flex items-center justify-center gap-2 p-4 border border-red-300 rounded-lg hover:bg-red-50 text-red-600">
                   <Trash2 className="h-5 w-5" />
-                  <div className="text-left">
-                    <p className="font-medium">Clear All</p>
-                    <p className="text-sm text-red-500">Delete everything</p>
-                  </div>
+                  <div> <p className="font-medium">Clear All</p> <p className="text-sm text-red-500">Delete everything (N/A)</p> </div>
                 </button>
               </div>
             </div>
           )}
 
-          {/* Preferences Tab */}
+          {/* Preferences Tab (Largely unchanged as it's localStorage based) */}
           {activeTab === "preferences" && (
             <div className="space-y-6">
               <h3 className="text-xl font-semibold">User Preferences</h3>
-
               <div className="space-y-6">
-                {/* Concept Map Settings */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Default Concept Map Abstraction Level: {settings.preferences.defaultAbstractionLevel}%
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={settings.preferences.defaultAbstractionLevel}
-                    onChange={(e) =>
-                      saveSettings({
-                        ...settings,
-                        preferences: {
-                          ...settings.preferences,
-                          defaultAbstractionLevel: Number(e.target.value),
-                        },
-                      })
-                    }
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                  />
-                  <div className="flex justify-between text-xs text-gray-500 mt-1">
-                    <span>Show All</span>
-                    <span>Core Only</span>
-                  </div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2"> Default Concept Map Abstraction Level: {settings.preferences.defaultAbstractionLevel}% </label>
+                  <input type="range" min="0" max="100" value={settings.preferences.defaultAbstractionLevel}
+                    onChange={(e) => saveSettings({ ...settings, preferences: { ...settings.preferences, defaultAbstractionLevel: Number(e.target.value) }})}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1"> <span>Show All</span> <span>Core Only</span> </div>
                 </div>
-
-                {/* Auto-analyze Toggle */}
                 <div className="flex items-center justify-between">
-                  <div>
-                    <label className="text-sm font-medium text-gray-700">Auto-analyze new content</label>
-                    <p className="text-xs text-gray-500">Automatically analyze URLs when added</p>
-                  </div>
+                  <div> <label className="text-sm font-medium text-gray-700">Auto-analyze new content</label> <p className="text-xs text-gray-500">Automatically analyze URLs when added</p> </div>
                   <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={settings.preferences.autoAnalyze}
-                      onChange={(e) =>
-                        saveSettings({
-                          ...settings,
-                          preferences: {
-                            ...settings.preferences,
-                            autoAnalyze: e.target.checked,
-                          },
-                        })
-                      }
-                      className="sr-only peer"
-                    />
+                    <input type="checkbox" checked={settings.preferences.autoAnalyze}
+                      onChange={(e) => saveSettings({ ...settings, preferences: { ...settings.preferences, autoAnalyze: e.target.checked }})}
+                      className="sr-only peer" />
                     <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                   </label>
                 </div>
-
-                {/* Theme Selection */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Theme</label>
-                  <select
-                    value={settings.preferences.theme}
-                    onChange={(e) =>
-                      saveSettings({
-                        ...settings,
-                        preferences: {
-                          ...settings.preferences,
-                          theme: e.target.value as "light" | "dark" | "auto",
-                        },
-                      })
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                    <option value="auto">Auto (System)</option>
+                  <select value={settings.preferences.theme}
+                    onChange={(e) => saveSettings({ ...settings, preferences: { ...settings.preferences, theme: e.target.value as "light" | "dark" | "auto" }})}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" >
+                    <option value="light">Light</option> <option value="dark">Dark</option> <option value="auto">Auto (System)</option>
                   </select>
                 </div>
-
-                {/* Notifications */}
                 <div className="flex items-center justify-between">
-                  <div>
-                    <label className="text-sm font-medium text-gray-700">Enable notifications</label>
-                    <p className="text-xs text-gray-500">Get notified about new content and updates</p>
-                  </div>
+                  <div> <label className="text-sm font-medium text-gray-700">Enable notifications</label> <p className="text-xs text-gray-500">Get notified about new content and updates</p> </div>
                   <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={settings.preferences.notifications}
-                      onChange={(e) =>
-                        saveSettings({
-                          ...settings,
-                          preferences: {
-                            ...settings.preferences,
-                            notifications: e.target.checked,
-                          },
-                        })
-                      }
-                      className="sr-only peer"
-                    />
+                    <input type="checkbox" checked={settings.preferences.notifications}
+                      onChange={(e) => saveSettings({ ...settings, preferences: { ...settings.preferences, notifications: e.target.checked }})}
+                      className="sr-only peer" />
                     <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                   </label>
                 </div>
@@ -744,193 +612,73 @@ export default function SettingsView() {
             </div>
           )}
 
-          {/* Email Tab */}
-          {activeTab === "email" && (
+          {/* Email Tab - Needs Supabase auth for user context */}
+           {activeTab === "email" && (
             <div className="space-y-6">
               <h3 className="text-xl font-semibold">Weekly Digest Email</h3>
-
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Calendar className="h-5 w-5 text-blue-600" />
-                  <span className="font-medium text-blue-900">Automatic Weekly Digest</span>
-                </div>
-                <p className="text-blue-800 text-sm">
-                  Get a personalized digest of your week's learning every Monday at 4:00 AM Eastern Time.
-                </p>
-              </div>
-
-              <div className="space-y-6">
-                {/* Email Address */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Email Address for Weekly Digest
-                  </label>
-                  <input
-                    type="email"
-                    value={digestEmail}
-                    onChange={(e) => setDigestEmail(e.target.value)}
-                    placeholder="your@email.com"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                {/* Current Status */}
-                {digestStatus && (
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <CheckCircle className="h-4 w-4 text-green-600" />
-                      <span className="font-medium text-green-900">Digest Scheduled</span>
-                    </div>
-                    <div className="text-sm text-green-800 space-y-1">
-                      <p>Email: {digestStatus.email}</p>
-                      <p>Next delivery: {new Date(digestStatus.scheduledFor).toLocaleString()}</p>
-                      <p>Status: {digestStatus.status}</p>
-                      {digestStatus.lastSent && <p>Last sent: {new Date(digestStatus.lastSent).toLocaleString()}</p>}
-                    </div>
+              {currentUser ? (
+                <>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-2"> <Calendar className="h-5 w-5 text-blue-600" /> <span className="font-medium text-blue-900">Automatic Weekly Digest</span> </div>
+                    <p className="text-blue-800 text-sm"> Get a personalized digest of your week's learning every Monday at 4:00 AM Eastern Time. </p>
                   </div>
-                )}
-
-                {/* Action Buttons */}
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleSaveDigestEmail}
-                    disabled={!digestEmail}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
-                  >
-                    <Mail className="h-4 w-4" />
-                    {digestStatus ? "Update" : "Schedule"} Weekly Digest
-                  </button>
-
-                  <button
-                    onClick={handleTestDigest}
-                    disabled={!digestEmail}
-                    className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2"
-                  >
-                    <Mail className="h-4 w-4" />
-                    Send Test Digest
-                  </button>
-
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2"> Email Address for Weekly Digest </label>
+                    <input type="email" value={digestEmail} onChange={(e) => setDigestEmail(e.target.value)} placeholder="your@email.com"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+                  </div>
                   {digestStatus && (
-                    <button
-                      onClick={handleUnscheduleDigest}
-                      className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-                    >
-                      Unschedule
-                    </button>
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                      <div className="flex items-center gap-2 mb-2"> <CheckCircle className="h-4 w-4 text-green-600" /> <span className="font-medium text-green-900">Digest Scheduled</span> </div>
+                      <div className="text-sm text-green-800 space-y-1">
+                        <p>Email: {digestStatus.email}</p>
+                        <p>Next delivery: {new Date(digestStatus.scheduledFor).toLocaleString()}</p>
+                        <p>Status: {digestStatus.status}</p>
+                        {digestStatus.lastSent && <p>Last sent: {new Date(digestStatus.lastSent).toLocaleString()}</p>}
+                      </div>
+                    </div>
                   )}
-                </div>
-
-                {/* Info */}
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                  <h4 className="font-medium mb-2">How it works:</h4>
-                  <ul className="text-sm text-gray-600 space-y-1">
-                    <li>• Digest is generated every Monday at 4:00 AM Eastern Time</li>
-                    <li>• Includes all content you've analyzed in the past week</li>
-                    <li>• AI-powered summary with key insights and connections</li>
-                    <li>• Personalized recommendations and action items</li>
-                    <li>• Automatically scheduled to repeat weekly</li>
-                  </ul>
-                </div>
-
-                {/* Debug Information */}
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                  <h4 className="font-medium mb-2 text-yellow-900">🔍 Scheduling Debug Info:</h4>
-                  <button
-                    onClick={() => {
-                      const debug = digestScheduler.debugScheduling()
-                      console.log("Digest Scheduling Debug:", debug)
-                      setStatus(
-                        `📊 Debug info logged to console. Next digest: ${debug.nextDigest.et} (${debug.nextDigest.hoursFromNow}h from now)`,
-                      )
-                      setTimeout(() => setStatus(""), 10000)
-                    }}
-                    className="bg-yellow-600 hover:bg-yellow-700 text-white font-medium py-1 px-3 rounded text-sm"
-                  >
-                    Check Scheduling Logic
-                  </button>
-                  <div className="mt-2 text-sm text-yellow-800">
-                    <p>Click to verify next Monday 4 AM ET calculation and view all scheduled digests.</p>
+                  <div className="flex gap-3">
+                    <button onClick={handleSaveDigestEmail} disabled={!digestEmail} className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2">
+                      <Mail className="h-4 w-4" /> {digestStatus ? "Update" : "Schedule"} Weekly Digest
+                    </button>
+                    <button onClick={handleTestDigest} disabled={!digestEmail} className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center gap-2">
+                      <Mail className="h-4 w-4" /> Send Test Digest
+                    </button>
+                    {digestStatus && ( <button onClick={handleUnscheduleDigest} className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"> Unschedule </button> )}
                   </div>
-                </div>
-              </div>
+                </>
+              ) : (
+                <p className="text-gray-600">Please log in to manage digest settings.</p>
+              )}
             </div>
           )}
 
-          {/* Performance Tab */}
+
+          {/* Performance Tab (Largely unchanged as it's localStorage based) */}
           {activeTab === "performance" && (
             <div className="space-y-6">
               <h3 className="text-xl font-semibold">Performance Settings</h3>
-
               <div className="space-y-6">
-                {/* Performance Metrics */}
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <h4 className="font-medium mb-3">Current Performance</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-600">Avg Analysis Time:</span>
-                      <div className="font-medium">{databaseStats.performance.avgAnalysisTime}s</div>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Success Rate:</span>
-                      <div className="font-medium">{databaseStats.performance.successRate.toFixed(1)}%</div>
-                    </div>
-                    <div>
-                      <span className="text-gray-600">Cache Hit Rate:</span>
-                      <div className="font-medium">N/A</div>
-                    </div>
-                  </div>
+                 <div className="bg-gray-50 p-4 rounded-lg">
+                  <h4 className="font-medium mb-3">Current Performance (Client)</h4>
+                  <p className="text-sm text-gray-700">Note: Server performance metrics are managed by Supabase.</p>
                 </div>
-
-                {/* Performance Settings */}
                 <div className="flex items-center justify-between">
-                  <div>
-                    <label className="text-sm font-medium text-gray-700">Enable caching</label>
-                    <p className="text-xs text-gray-500">Cache analysis results for faster loading</p>
-                  </div>
+                  <div> <label className="text-sm font-medium text-gray-700">Enable client-side caching</label> <p className="text-xs text-gray-500">Cache analysis results for faster loading</p> </div>
                   <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={settings.performance.enableCaching}
-                      onChange={(e) =>
-                        saveSettings({
-                          ...settings,
-                          performance: {
-                            ...settings.performance,
-                            enableCaching: e.target.checked,
-                          },
-                        })
-                      }
-                      className="sr-only peer"
-                    />
+                    <input type="checkbox" checked={settings.performance.enableCaching}
+                      onChange={(e) => saveSettings({ ...settings, performance: { ...settings.performance, enableCaching: e.target.checked }})}
+                      className="sr-only peer" />
                     <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                   </label>
                 </div>
-
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Batch Size: {settings.performance.batchSize}
-                  </label>
-                  <input
-                    type="range"
-                    min="10"
-                    max="100"
-                    step="10"
-                    value={settings.performance.batchSize}
-                    onChange={(e) =>
-                      saveSettings({
-                        ...settings,
-                        performance: {
-                          ...settings.performance,
-                          batchSize: Number(e.target.value),
-                        },
-                      })
-                    }
-                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                  />
-                  <div className="flex justify-between text-xs text-gray-500 mt-1">
-                    <span>10</span>
-                    <span>100</span>
-                  </div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2"> Client Batch Size (e.g., for UI lists): {settings.performance.batchSize} </label>
+                  <input type="range" min="10" max="100" step="10" value={settings.performance.batchSize}
+                    onChange={(e) => saveSettings({ ...settings, performance: { ...settings.performance, batchSize: Number(e.target.value)}})}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1"> <span>10</span> <span>100</span> </div>
                 </div>
               </div>
             </div>
@@ -940,62 +688,29 @@ export default function SettingsView() {
           {activeTab === "maintenance" && (
             <div className="space-y-6">
               <h3 className="text-xl font-semibold">Database Maintenance</h3>
-
-              {/* Maintenance Actions */}
+              <p className="text-sm text-gray-600">Database maintenance and optimization are primarily handled by Supabase for cloud-hosted PostgreSQL instances.</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <button
-                  onClick={handleVacuum}
-                  disabled={isVacuuming}
-                  className="flex items-center gap-3 p-4 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
-                >
+                <button onClick={handleVacuum} disabled={isVacuuming} className="flex items-center gap-3 p-4 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
                   <RefreshCw className={`h-5 w-5 text-blue-600 ${isVacuuming ? "animate-spin" : ""}`} />
-                  <div className="text-left">
-                    <p className="font-medium">Clean Database</p>
-                    <p className="text-sm text-gray-600">Remove orphaned data</p>
-                  </div>
+                  <div> <p className="font-medium">Clean Database (N/A)</p> <p className="text-sm text-gray-600">Managed by Supabase</p> </div>
                 </button>
-
-                <button
-                  onClick={performHealthCheck}
-                  className="flex items-center gap-3 p-4 border border-gray-300 rounded-lg hover:bg-gray-50"
-                >
+                <button onClick={performHealthCheck} className="flex items-center gap-3 p-4 border border-gray-300 rounded-lg hover:bg-gray-50">
                   <Activity className="h-5 w-5 text-green-600" />
-                  <div className="text-left">
-                    <p className="font-medium">Health Check</p>
-                    <p className="text-sm text-gray-600">Verify system integrity</p>
-                  </div>
+                  <div> <p className="font-medium">Client Health Check</p> <p className="text-sm text-gray-600">Verify client-Supabase link</p> </div>
                 </button>
               </div>
-
-              {/* Database Tables */}
-              <div className="bg-white border border-gray-200 rounded-lg p-6">
-                <h4 className="font-medium mb-4">Database Tables</h4>
-                <div className="space-y-3">
-                  {Object.entries(databaseStats.tables).map(([table, count]) => (
-                    <div key={table} className="flex items-center justify-between">
-                      <span className="font-medium capitalize">{table}</span>
-                      <span className="text-gray-600">{count} records</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* System Checks */}
+               {/* System Checks - Health check is now async */}
               {healthCheck && (
                 <div className="bg-white border border-gray-200 rounded-lg p-6">
                   <h4 className="font-medium mb-4">System Checks</h4>
                   <div className="space-y-3">
-                    {Object.entries(healthCheck.checks).map(([check, status]) => (
+                    {Object.entries(healthCheck.checks).map(([check, checkStatus]) => ( // Renamed status to checkStatus
                       <div key={check} className="flex items-center justify-between">
                         <span className="capitalize">{check.replace(/([A-Z])/g, " $1").trim()}</span>
                         <div className="flex items-center gap-2">
-                          {status ? (
-                            <CheckCircle className="h-4 w-4 text-green-600" />
-                          ) : (
-                            <XCircle className="h-4 w-4 text-red-600" />
-                          )}
-                          <span className={`text-sm ${status ? "text-green-600" : "text-red-600"}`}>
-                            {status ? "Healthy" : "Issues"}
+                          {checkStatus ? <CheckCircle className="h-4 w-4 text-green-600" /> : <XCircle className="h-4 w-4 text-red-600" />}
+                          <span className={`text-sm ${checkStatus ? "text-green-600" : "text-red-600"}`}>
+                            {checkStatus ? "Healthy" : "Issues"}
                           </span>
                         </div>
                       </div>
@@ -1006,19 +721,21 @@ export default function SettingsView() {
             </div>
           )}
 
+          {/* Google Drive Tab - Assuming googleAuth and DriveExport are adapted or placeholders */}
           {activeTab === "drive" && (
             <div className="space-y-6">
               <h3 className="text-xl font-semibold">Google Drive Integration</h3>
-
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <Cloud className="h-5 w-5 text-blue-600" />
-                  <span className="font-medium text-blue-900">Connected Account</span>
-                </div>
-                <div className="text-sm text-blue-800">{googleAuth.getCurrentUser()?.email}</div>
-              </div>
-
-              <DriveExport />
+              {googleAuth.getCurrentUser() ? ( // Check if user is logged in via googleAuth
+                <>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                    <div className="flex items-center gap-2 mb-2"> <Cloud className="h-5 w-5 text-blue-600" /> <span className="font-medium text-blue-900">Connected Account</span> </div>
+                    <div className="text-sm text-blue-800">{googleAuth.getCurrentUser()?.email}</div>
+                  </div>
+                  <DriveExport />
+                </>
+              ) : (
+                <p className="text-gray-600">Google Drive features require Google sign-in. (Auth system undergoing refactor)</p>
+              )}
             </div>
           )}
         </div>
