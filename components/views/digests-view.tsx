@@ -22,9 +22,12 @@ export default function DigestsView() {
   const [realContentCount, setRealContentCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [storedContent, setStoredContent] = useState<any[]>([])
+  const [error, setError] = useState<string | null>(null) // Added error state
 
   // Memoized content loading with caching
   const loadContentData = useCallback(async () => {
+    setIsLoading(true) // Set loading true at the start of fetch
+    setError(null) // Clear previous errors
     const cacheKey = `digest-content:${activeDigestType}`
 
     // Check cache first
@@ -39,23 +42,30 @@ export default function DigestsView() {
     const timer = performanceMonitor.startTimer("db-query")
 
     try {
-      const result = ContentProcessor.getStoredContent({
+      // ContentProcessor.getStoredContent is now async
+      const resultItems = await ContentProcessor.getStoredContent({
         limit: 100,
         timeframe: activeDigestType,
       })
 
-      const content = Array.isArray(result) ? result : result.items || []
-      const count = Array.isArray(result) ? result.length : result.total || 0
+      // getStoredContent now directly returns items array as per its last refactor
+      // or it returns an object { items, total, hasMore } if we use databaseService.getStoredContent directly
+      // Assuming ContentProcessor.getStoredContent was updated to return items directly for this view's existing logic
+      const content = Array.isArray(resultItems) ? resultItems : [] // Ensure content is an array
+      const count = content.length // Count based on the items received
 
       setStoredContent(content)
       setRealContentCount(count)
 
       // Cache for 5 minutes
-      cacheManager.set(cacheKey, { content, count }, 5 * 60 * 1000)
-    } catch (error) {
-      console.error("Error loading content data:", error)
+      if (content.length > 0) { // Only cache if we got some content
+        cacheManager.set(cacheKey, { content, count }, 5 * 60 * 1000)
+      }
+    } catch (err: any) {
+      console.error("Error loading content data:", err)
+      setError(`Failed to load digest content: ${err.message || "Unknown error"}`)
       performanceMonitor.recordError()
-      setStoredContent([])
+      setStoredContent([]) // Clear content on error
       setRealContentCount(0)
     } finally {
       setIsLoading(false)
@@ -163,9 +173,28 @@ export default function DigestsView() {
   if (isLoading) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-8">
-        <LoadingSkeleton />
+        {/* Placeholder for navigation/header part of the skeleton */}
+        <LoadingSkeleton height={60} className="mb-8" />
+        {/* Skeleton for content list */}
+        <LoadingSkeleton height={40} width="70%" className="mb-4" />
+        <LoadingSkeleton count={3} height={80} className="mb-4" />
       </div>
     )
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-8 text-center">
+        <h2 className="text-xl font-semibold text-red-600 mb-2">Error Loading Digests</h2>
+        <p className="text-gray-700 mb-4">{error}</p>
+        <button
+          onClick={loadContentData}
+          className="bg-red-500 hover:bg-red-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+        >
+          Try Again
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -259,40 +288,40 @@ export default function DigestsView() {
           </div>
         )}
 
-        {/* Content Status */}
-        {realContentCount > 0 ? (
-          <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-            <div className="flex items-center gap-2 text-green-800">
-              <div className="w-2 h-2 bg-green-600 rounded-full"></div>
-              <span className="text-sm font-medium">
-                You have {realContentCount} analyzed articles ready for digest generation.
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-            <div className="flex items-center gap-2 text-amber-800">
-              <div className="w-2 h-2 bg-amber-600 rounded-full"></div>
-              <span className="text-sm font-medium">
-                No analyzed content found. Add some sources in Source Management and analyze content to generate
-                personalized digests.
-              </span>
-            </div>
-          </div>
+        {/* Content Status and Display Logic */}
+        {!isLoading && !error && storedContent.length === 0 && !generatedDigest && (
+           <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+             <div className="flex items-center gap-2 text-amber-800">
+               <div className="w-2 h-2 bg-amber-600 rounded-full"></div>
+               <span className="text-sm font-medium">
+                 No analyzed content found for this period. Add sources and analyze content to generate digests.
+               </span>
+             </div>
+           </div>
         )}
 
-        {/* Real Content Display */}
-        {storedContent.length > 0 && (
-          <div className="space-y-6">
-            <h3 className="text-lg font-semibold text-gray-900">Your Analyzed Content</h3>
-            <div className="space-y-2">{contentItems}</div>
-            {storedContent.length > 10 && (
-              <p className="text-sm text-gray-600 text-center">
-                Showing first 10 of {storedContent.length} analyzed articles
-              </p>
-            )}
-          </div>
+        {!isLoading && !error && storedContent.length > 0 && (
+          <>
+            <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+              <div className="flex items-center gap-2 text-green-800">
+                <div className="w-2 h-2 bg-green-600 rounded-full"></div>
+                <span className="text-sm font-medium">
+                  Displaying {storedContent.length} analyzed articles for potential digest generation.
+                </span>
+              </div>
+            </div>
+            <div className="space-y-6">
+              <h3 className="text-lg font-semibold text-gray-900">Your Analyzed Content (Preview)</h3>
+              <div className="space-y-2">{contentItems}</div>
+              {storedContent.length > 10 && (
+                <p className="text-sm text-gray-600 text-center">
+                  Showing first 10 of {storedContent.length} analyzed articles
+                </p>
+              )}
+            </div>
+          </>
         )}
+
 
         {/* Full Read Modal */}
         <FullReadModal

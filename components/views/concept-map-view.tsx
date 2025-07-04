@@ -14,7 +14,8 @@ export default function ConceptMapView() {
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<ConceptNode[]>([]) // Typed searchResults
   const [showSearchResults, setShowSearchResults] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
+  const [isLoading, setIsLoading] = useState(true) // For initial stats load
+  const [statsError, setStatsError] = useState<string | null>(null); // For stats loading error
   const [conceptStats, setConceptStats] = useState<any>(null) // Consider more specific type
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters] = useState({
@@ -25,23 +26,28 @@ export default function ConceptMapView() {
 
   const loadConceptStats = useCallback(async () => {
     try {
-      setIsLoading(true)
-      // getApplicationStats is async and returns a different structure
-      const appStats = await databaseService.getApplicationStats()
-      setConceptStats(appStats.concepts) // Assuming appStats.concepts has the desired stats
-    } catch (error) {
-      console.error("Error loading concept stats:", error)
-      setConceptStats(null) // Reset or handle error state
+      setIsLoading(true);
+      setStatsError(null); // Clear previous errors
+      const appStats = await databaseService.getApplicationStats();
+      if (appStats && appStats.concepts) {
+        setConceptStats(appStats.concepts);
+      } else {
+        throw new Error("Concept stats not found in application data.");
+      }
+    } catch (error: any) {
+      console.error("Error loading concept stats:", error);
+      setStatsError(`Failed to load concept statistics: ${error.message || "Unknown error"}`);
+      setConceptStats(null);
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }, []) // Added dependency array for useCallback
+  }, []);
 
   useEffect(() => {
-    loadConceptStats()
-  }, [loadConceptStats]) // useEffect depends on loadConceptStats
+    loadConceptStats();
+  }, [loadConceptStats]);
 
-  const handleConceptClick = (conceptId: string) => {
+  const handleConceptClick = (conceptId: string | null) => { // Allow null to clear selection
     setSelectedNodeId(conceptId)
     setShowSearchResults(false) // Close search results when a node is clicked
   }
@@ -116,25 +122,64 @@ export default function ConceptMapView() {
 
   const applyFilters = (newFilters: typeof filters) => {
     setFilters(newFilters)
-    // The concept map component might need to be re-fetched or re-rendered based on these filters
-    // This might involve passing filters to ConceptMap and having it re-fetch data
+    // The concept map component will re-fetch/re-render based on these filters as they are passed as props
   }
 
-  if (isLoading) {
+  // Initial loading for stats
+  if (isLoading && !conceptStats && !statsError) {
     return (
-      <div className="max-w-full mx-auto px-4 py-8 h-[calc(100vh-200px)]">
-        <LoadingSkeleton />
+      <div className="max-w-full mx-auto px-4 py-8 h-[calc(100vh-200px)] flex items-center justify-center">
+        <div className="w-full md:w-3/4 lg:w-1/2 p-4">
+            <h2 className="text-xl font-semibold text-center mb-4">Loading Concept Map Data...</h2>
+            <LoadingSkeleton height={30} className="mb-4" />
+            <LoadingSkeleton count={3} height={20} className="mb-2"/>
+            <LoadingSkeleton height={200} />
+        </div>
       </div>
     )
   }
+
+  // Display error for stats loading if it occurred
+  // The ConceptMap child component will handle its own loading/error for graph data.
+  // This error display is for issues fetching the sidebar stats.
+  // if (statsError && !isLoading) { // Show error only if not loading anymore
+  //   return (
+  //     <div className="max-w-full mx-auto px-4 py-8 h-[calc(100vh-200px)] flex items-center justify-center">
+  //       <div className="p-4 bg-red-100 border border-red-400 text-red-700 rounded-md text-center">
+  //         <p className="font-semibold">Error loading concept statistics:</p>
+  //         <p>{statsError}</p>
+  //         <button
+  //           onClick={loadConceptStats}
+  //           className="mt-4 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+  //         >
+  //           Try Again
+  //         </button>
+  //       </div>
+  //     </div>
+  //   );
+  // }
+
 
   return (
     <div className="max-w-full mx-auto px-4 py-8 h-[calc(100vh-200px)]">
       <div className="flex h-full relative">
         {/* Sidebar for controls */}
         <div className="w-64 bg-gray-50 rounded-lg p-4 mr-4 flex-shrink-0 overflow-y-auto">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-medium text-gray-900">Graph Controls</h3>
+          {isLoading && <LoadingSkeleton count={3} height={20} className="mb-2"/>}
+          {statsError && !isLoading && (
+            <div className="p-3 mb-4 bg-red-100 border border-red-300 text-red-700 rounded-md text-sm">
+                <p className="font-medium">Error loading stats:</p>
+                <p>{statsError}</p>
+                <button onClick={loadConceptStats} className="text-red-600 hover:underline text-xs mt-1">Try again</button>
+            </div>
+          )}
+          {!isLoading && !statsError && (
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-medium text-gray-900">Graph Controls</h3>
+          )}
+          {/* Rest of the sidebar, conditional on !isLoading and !statsError for stats section */}
+          {/* Or just let stats section handle its own loading/error state if conceptStats is null */}
+
             <div className="flex gap-1">
               <button
                 onClick={handleRefresh}

@@ -13,6 +13,7 @@ import ConceptMapView from "@/components/views/concept-map-view"
 import SourceManagementView from "@/components/views/source-management-view"
 import SettingsView from "@/components/views/settings-view"
 import ErrorBoundary from "@/components/error-boundary"
+import LoadingSkeleton from "@/components/ui/LoadingSkeleton" // Import LoadingSkeleton
 
 export default function Home() {
   const auth = useAuth();
@@ -65,11 +66,15 @@ export default function Home() {
 
   if (auth.isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading Pensive...</p>
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+        {/* Simulate a simple page structure loading */}
+        <div className="w-full max-w-md">
+          <LoadingSkeleton height={40} className="mb-6" /> {/* Header/Nav placeholder */}
+          <LoadingSkeleton height={20} width="80%" className="mb-4" /> {/* Title placeholder */}
+          <LoadingSkeleton count={3} className="mb-2" /> {/* Content lines placeholder */}
+          <LoadingSkeleton height={100} className="mt-4" /> {/* Larger block placeholder */}
         </div>
+        <p className="text-gray-600 mt-4">Loading Pensive...</p>
       </div>
     )
   }
