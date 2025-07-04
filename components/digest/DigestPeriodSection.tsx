@@ -9,6 +9,7 @@ type Period = 'week' | 'month' | 'quarter'; // Renamed from 'weekly' etc. to mat
 
 interface DigestPeriodSectionProps {
   period: Period;
+  initialDigestData?: DigestData | null; // New prop for initial data
   // If this component is user-specific and data fetching depends on user, a userId prop might be needed.
   // For now, assuming ContentProcessor methods don't require explicit userId here or handle it internally.
 }
@@ -29,12 +30,22 @@ interface DigestData {
   };
 }
 
-const DigestPeriodSection: React.FC<DigestPeriodSectionProps> = ({ period }) => {
-  const [digestData, setDigestData] = useState<DigestData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+const DigestPeriodSection: React.FC<DigestPeriodSectionProps> = ({ period, initialDigestData }) => {
+  const [digestData, setDigestData] = useState<DigestData | null>(initialDigestData || null);
+  // Set initial loading state based on whether initial data is provided
+  const [isLoading, setIsLoading] = useState(!initialDigestData);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchDigestData = useCallback(async () => {
+  const fetchDigestData = useCallback(async (isInitialCall: boolean) => {
+    // If it's the initial call and initialDigestData is present, don't re-fetch.
+    if (isInitialCall && initialDigestData) {
+      setDigestData(initialDigestData);
+      setIsLoading(false);
+      return;
+    }
+    // If initialData was for a different period (which shouldn't happen if key prop is used correctly on parent)
+    // or if this is a subsequent fetch (e.g. retry), then proceed.
+
     setIsLoading(true);
     setError(null);
     try {
@@ -93,11 +104,12 @@ const DigestPeriodSection: React.FC<DigestPeriodSectionProps> = ({ period }) => 
     } finally {
       setIsLoading(false);
     }
-  }, [period]);
+  }, [period, initialDigestData]); // Add initialDigestData to dependencies
 
   useEffect(() => {
-    fetchDigestData();
-  }, [fetchDigestData]);
+    // Pass true for the initial call context
+    fetchDigestData(true);
+  }, [fetchDigestData]); // fetchDigestData now includes initialDigestData in its own deps
 
   if (isLoading) {
     return (

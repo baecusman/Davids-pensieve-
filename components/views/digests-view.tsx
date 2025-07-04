@@ -8,9 +8,42 @@ import { ContentProcessor } from "@/lib/content-processor"
 import { performanceMonitor } from "@/lib/performance-monitor"
 import { cacheManager } from "@/lib/cache-manager"
 import ErrorBoundary from "../error-boundary";
-import DigestPeriodSection from "../digest/DigestPeriodSection"; // Import the new component
+import DigestPeriodSection from "../digest/DigestPeriodSection";
 
-export default function DigestsView() {
+// Define interfaces for the initial data passed from Server Component
+// These should match the structure defined in AppClientShell and app/page.tsx
+interface InitialDigestArticle {
+  id: string;
+  title: string;
+  url?: string;
+  createdAt: string;
+  analysis?: {
+    summary?: { sentence: string };
+    tags?: string[];
+    priority?: string;
+  };
+}
+
+interface InitialAIDigest {
+  timeframe: string;
+  generatedAt: string;
+  summary: string;
+  trendingConcepts: Array<{ name: string; reason: string; importance: string; trendType: string }>;
+  items: Array<any>;
+  stats: {
+    totalArticles: number;
+    deepDiveCount: number;
+    readCount: number;
+    skimCount: number;
+  };
+}
+
+interface DigestsViewProps {
+  initialPreviewArticles?: InitialDigestArticle[];
+  initialAiDigest?: InitialAIDigest | null;
+}
+
+export default function DigestsView({ initialPreviewArticles, initialAiDigest }: DigestsViewProps) {
   const [activeDigestType, setActiveDigestType] = useState<"weekly" | "monthly" | "quarterly">("weekly");
   const [selectedFullRead, setSelectedFullRead] = useState<{
     title: string;
@@ -27,59 +60,72 @@ export default function DigestsView() {
 
   // This function now primarily loads content for the preview list.
   // DigestPeriodSection will handle its own data fetching for the AI digest.
-  const loadContentData = useCallback(async () => {
-    setIsLoading(true) // Set loading true at the start of fetch
-    setError(null) // Clear previous errors
-    const cacheKey = `digest-content:${activeDigestType}`
-
-    // Check cache first
-    const cached = cacheManager.get<{ content: any[]; count: number }>(cacheKey)
-    if (cached) {
-      setStoredContent(cached.content)
-      setRealContentCount(cached.count)
-      setIsLoading(false)
-      return
+  const loadContentData = useCallback(async (isInitialLoad = false) => {
+    // If initial data is provided for the current activeDigestType, use it for the preview
+    if (isInitialLoad && initialPreviewArticles &&
+        (activeDigestType === 'weekly' || (initialPreviewArticles as any).timeframe === activeDigestType) // Basic check
+    ) {
+      setStoredContent(initialPreviewArticles);
+      setRealContentCount(initialPreviewArticles.length);
+      setIsLoading(false);
+      return;
     }
 
-    const timer = performanceMonitor.startTimer("db-query")
+    setIsLoading(true);
+    setError(null);
+    const cacheKey = `digest-content-preview:${activeDigestType}`;
+    const cached = cacheManager.get<{ content: any[]; count: number }>(cacheKey);
 
+    if (cached) {
+      setStoredContent(cached.content);
+      setRealContentCount(cached.count);
+      setIsLoading(false);
+      return;
+    }
+
+    const timer = performanceMonitor.startTimer("preview-db-query");
     try {
-      // ContentProcessor.getStoredContent is now async
       const resultItems = await ContentProcessor.getStoredContent({
-        limit: 100,
+        limit: 100, // Limit for preview
         timeframe: activeDigestType,
-      })
+      });
 
-      // getStoredContent now directly returns items array as per its last refactor
-      // or it returns an object { items, total, hasMore } if we use databaseService.getStoredContent directly
-      // Assuming ContentProcessor.getStoredContent was updated to return items directly for this view's existing logic
-      const content = Array.isArray(resultItems) ? resultItems : [] // Ensure content is an array
-      const count = content.length // Count based on the items received
+      const content = Array.isArray(resultItems) ? resultItems : [];
+      const count = content.length;
 
-      setStoredContent(content)
-      setRealContentCount(count)
+      setStoredContent(content);
+      setRealContentCount(count);
 
-      // Cache for 5 minutes
-      if (content.length > 0) { // Only cache if we got some content
-        cacheManager.set(cacheKey, { content, count }, 5 * 60 * 1000)
+      if (content.length > 0) {
+        cacheManager.set(cacheKey, { content, count }, 5 * 60 * 1000); // 5 min cache for preview
       }
     } catch (err: any) {
-      console.error("Error loading content data:", err)
-      setError(`Failed to load digest content: ${err.message || "Unknown error"}`)
-      performanceMonitor.recordError()
-      setStoredContent([]) // Clear content on error
-      setRealContentCount(0)
+      console.error("Error loading preview content data:", err);
+      setError(`Failed to load preview content: ${err.message || "Unknown error"}`);
+      setStoredContent([]);
+      setRealContentCount(0);
     } finally {
-      setIsLoading(false)
-      timer()
+      setIsLoading(false);
+      timer();
     }
-  }, [activeDigestType])
+  }, [activeDigestType, initialPreviewArticles]);
 
-  // Debounced loading
   useEffect(() => {
-    const timeoutId = setTimeout(loadContentData, 100)
-    return () => clearTimeout(timeoutId)
-  }, [loadContentData])
+    // Pass true for initial load to check for props
+    const timeoutId = setTimeout(() => loadContentData(true), 100);
+    return () => clearTimeout(timeoutId);
+  }, [loadContentData]); // loadContentData itself depends on activeDigestType and initialPreviewArticles
+
+  // When activeDigestType changes, reload preview content (will check cache/fetch)
+  // This useEffect is separate from the initial load to handle tab switches.
+  useEffect(() => {
+    // Don't run on initial mount if initialPreviewArticles are handled by the first useEffect's loadContentData(true)
+    // This effect is mainly for subsequent changes to activeDigestType
+    if (!isLoading) { // Avoid fetching if initial load is still in progress or if initial props were just used.
+        const timeoutId = setTimeout(() => loadContentData(false), 100); // Pass false, not initial load
+        return () => clearTimeout(timeoutId);
+    }
+  }, [activeDigestType]); // Only re-run when activeDigestType changes, not loadContentData to avoid loop
 
   // Memoized event handlers
   const handleTagClick = useCallback((tag: string) => {
@@ -174,6 +220,16 @@ export default function DigestsView() {
         <DigestPeriodSection
           key={activeDigestType} // Add key to force re-mount and re-fetch when period changes
           period={activeDigestType === 'weekly' ? 'week' : activeDigestType === 'monthly' ? 'month' : 'quarter'}
+          initialDigestData={
+            // Pass initialAiDigest only if it's for the currently active default period ('weekly' -> 'week')
+            // And if initialAiDigest itself exists and its timeframe matches
+            (activeDigestType === 'weekly' && initialAiDigest && initialAiDigest.timeframe === 'weekly')
+            // Add similar checks if app/page.tsx could fetch for other initial periods
+            // || (activeDigestType === 'monthly' && initialAiDigest && initialAiDigest.timeframe === 'monthly')
+            // || (activeDigestType === 'quarterly' && initialAiDigest && initialAiDigest.timeframe === 'quarterly')
+              ? initialAiDigest
+              : undefined // Pass undefined if not applicable, so DigestPeriodSection fetches
+          }
         />
 
         {/* Preview of Stored Content (Optional - kept for now) */}
