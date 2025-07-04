@@ -7,24 +7,26 @@ import LoadingSkeleton from "../loading-skeleton"
 import { ContentProcessor } from "@/lib/content-processor"
 import { performanceMonitor } from "@/lib/performance-monitor"
 import { cacheManager } from "@/lib/cache-manager"
-import ErrorBoundary from "../error-boundary"
+import ErrorBoundary from "../error-boundary";
+import DigestPeriodSection from "../digest/DigestPeriodSection"; // Import the new component
 
 export default function DigestsView() {
-  const [activeDigestType, setActiveDigestType] = useState<"weekly" | "monthly" | "quarterly">("weekly")
+  const [activeDigestType, setActiveDigestType] = useState<"weekly" | "monthly" | "quarterly">("weekly");
   const [selectedFullRead, setSelectedFullRead] = useState<{
-    title: string
-    content: string
-    url?: string
-  } | null>(null)
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [generationStatus, setGenerationStatus] = useState("")
-  const [generatedDigest, setGeneratedDigest] = useState<any>(null)
-  const [realContentCount, setRealContentCount] = useState(0)
-  const [isLoading, setIsLoading] = useState(true)
-  const [storedContent, setStoredContent] = useState<any[]>([])
-  const [error, setError] = useState<string | null>(null) // Added error state
+    title: string;
+    content: string;
+    url?: string;
+  } | null>(null);
+  // const [isGenerating, setIsGenerating] = useState(false); // Will be handled by DigestPeriodSection
+  // const [generationStatus, setGenerationStatus] = useState(""); // Will be handled by DigestPeriodSection
+  // const [generatedDigest, setGeneratedDigest] = useState<any>(null); // Will be handled by DigestPeriodSection
+  const [realContentCount, setRealContentCount] = useState(0);
+  const [isLoading, setIsLoading] = useState(true); // For the preview list
+  const [storedContent, setStoredContent] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-  // Memoized content loading with caching
+  // This function now primarily loads content for the preview list.
+  // DigestPeriodSection will handle its own data fetching for the AI digest.
   const loadContentData = useCallback(async () => {
     setIsLoading(true) // Set loading true at the start of fetch
     setError(null) // Clear previous errors
@@ -93,63 +95,10 @@ export default function DigestsView() {
     })
   }, [])
 
-  // Optimized digest generation
-  const handleGenerate = useCallback(async () => {
-    if (isGenerating) return
+  // Optimized digest generation - This is now handled by DigestPeriodSection
+  // const handleGenerate = useCallback(async () => { ... }, [isGenerating, storedContent, activeDigestType])
 
-    setIsGenerating(true)
-    setGenerationStatus("Gathering content from database...")
-
-    const timer = performanceMonitor.startTimer("api-call")
-
-    try {
-      if (storedContent.length === 0) {
-        setGenerationStatus("No analyzed content found. Please add some sources and analyze content first.")
-        setTimeout(() => setGenerationStatus(""), 5000)
-        return
-      }
-
-      setGenerationStatus(`Found ${storedContent.length} analyzed articles in database...`)
-
-      // Convert stored content to digest format
-      const digestItems = storedContent.map((article) => ({
-        title: article.title,
-        summary: article.analysis?.summary?.sentence || article.summary || "No summary available",
-        fullSummary: article.analysis?.summary?.paragraph || article.fullSummary || "",
-        summaryType: article.analysis?.summary?.isFullRead ? ("full-read" as const) : ("paragraph" as const),
-        priority: article.analysis?.priority || article.priority || "read",
-        url: article.url,
-        conceptTags: article.analysis?.tags || article.conceptTags || [],
-        analyzedAt: article.createdAt || article.analyzedAt || new Date().toISOString(),
-        fullContent: article.analysis?.fullContent || article.fullContent || "",
-        source: "analyzed",
-      }))
-
-      setGenerationStatus(`Generating ${activeDigestType} digest with ${digestItems.length} articles using Grok...`)
-
-      const digest = await ContentProcessor.generateDigest(activeDigestType, digestItems)
-
-      setGenerationStatus(`✅ Generated comprehensive digest with ${digest.items.length} articles!`)
-      setGeneratedDigest(digest)
-
-      // Cache the generated digest
-      cacheManager.set(`generated-digest:${activeDigestType}`, digest, 30 * 60 * 1000) // 30 minutes
-
-      console.log("Generated comprehensive digest:", digest)
-
-      setTimeout(() => setGenerationStatus(""), 5000)
-    } catch (error) {
-      console.error("Error generating digest:", error)
-      performanceMonitor.recordError()
-      setGenerationStatus("❌ Error generating digest. Please try again.")
-      setTimeout(() => setGenerationStatus(""), 3000)
-    } finally {
-      setIsGenerating(false)
-      timer()
-    }
-  }, [isGenerating, storedContent, activeDigestType])
-
-  // Memoized content items for performance
+  // Memoized content items for performance (for the preview list)
   const contentItems = useMemo(() => {
     return storedContent
       .slice(0, 10)
@@ -200,17 +149,10 @@ export default function DigestsView() {
   return (
     <ErrorBoundary>
       <div className="max-w-4xl mx-auto px-4 py-8">
-        {/* Navigation with Generate button */}
+        {/* Navigation with Period Selection */}
         <div className="flex items-center gap-2 mb-8">
-          <button
-            onClick={handleGenerate}
-            disabled={isGenerating || storedContent.length === 0}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 hover:shadow-lg transform hover:scale-105 whitespace-nowrap disabled:transform-none disabled:shadow-none"
-          >
-            {isGenerating ? "Generating..." : "Generate"}
-          </button>
-
-          <div style={{ width: "5px" }} />
+          {/* The "Generate" button is removed as DigestPeriodSection handles its own data */}
+          {/* <div style={{ width: "5px" }} /> */} {/* Spacer removed or adjusted if needed */}
 
           <div className="flex bg-gray-100 rounded-lg p-1 flex-1">
             {(["weekly", "monthly", "quarterly"] as const).map((type) => (
@@ -227,91 +169,26 @@ export default function DigestsView() {
           </div>
         </div>
 
-        {/* Generation Status */}
-        {generationStatus && (
-          <div
-            className={`mb-6 p-3 rounded-lg border ${
-              generationStatus.includes("❌")
-                ? "bg-red-50 border-red-200 text-red-800"
-                : generationStatus.includes("✅")
-                  ? "bg-green-50 border-green-200 text-green-800"
-                  : "bg-blue-50 border-blue-200 text-blue-800"
-            }`}
-          >
-            <p className="text-sm">{generationStatus}</p>
-          </div>
-        )}
+        {/* Render the new DigestPeriodSection based on activeDigestType */}
+        {/* Map 'weekly' to 'week', 'monthly' to 'month', 'quarterly' to 'quarter' */}
+        <DigestPeriodSection
+          key={activeDigestType} // Add key to force re-mount and re-fetch when period changes
+          period={activeDigestType === 'weekly' ? 'week' : activeDigestType === 'monthly' ? 'month' : 'quarter'}
+        />
 
-        {/* Generated Digest Summary */}
-        {generatedDigest && (
-          <div className="mb-8 p-6 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                🤖 AI-Generated {generatedDigest.timeframe.charAt(0).toUpperCase() + generatedDigest.timeframe.slice(1)}{" "}
-                Digest
-              </h3>
-              <span className="text-xs text-gray-500">
-                Generated {new Date(generatedDigest.generatedAt).toLocaleString()}
-              </span>
-            </div>
-
-            <div className="prose prose-sm max-w-none mb-4">
-              <p className="text-gray-700 leading-relaxed">{generatedDigest.summary}</p>
-            </div>
-
-            {/* Trending Concepts */}
-            {generatedDigest.trendingConcepts && generatedDigest.trendingConcepts.length > 0 && (
-              <div className="mb-4">
-                <h4 className="text-sm font-medium text-gray-900 mb-2">🔥 Trending Concepts</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {generatedDigest.trendingConcepts.slice(0, 4).map((concept: any, index: number) => (
-                    <div key={index} className="bg-white p-3 rounded border border-blue-100">
-                      <h5 className="font-medium text-blue-900 text-sm">{concept.name}</h5>
-                      <p className="text-xs text-gray-600 mt-1">{concept.reason}</p>
-                      <p className="text-xs text-blue-700 mt-1 font-medium">{concept.importance}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Stats */}
-            <div className="flex flex-wrap gap-4 text-xs text-gray-600">
-              <span>📊 {generatedDigest.stats.totalArticles} total articles</span>
-              <span>🎯 {generatedDigest.stats.deepDiveCount} deep-dive</span>
-              <span>📖 {generatedDigest.stats.readCount} read</span>
-              <span>👁️ {generatedDigest.stats.skimCount} skim</span>
-              {generatedDigest.stats.analyzedArticles && (
-                <span className="text-blue-600">🔍 {generatedDigest.stats.analyzedArticles} from your content</span>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Content Status and Display Logic */}
-        {!isLoading && !error && storedContent.length === 0 && !generatedDigest && (
-           <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-             <div className="flex items-center gap-2 text-amber-800">
-               <div className="w-2 h-2 bg-amber-600 rounded-full"></div>
-               <span className="text-sm font-medium">
-                 No analyzed content found for this period. Add sources and analyze content to generate digests.
-               </span>
-             </div>
-           </div>
-        )}
-
+        {/* Preview of Stored Content (Optional - kept for now) */}
         {!isLoading && !error && storedContent.length > 0 && (
-          <>
+          <div className="mt-12"> {/* Added margin top for separation */}
             <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
               <div className="flex items-center gap-2 text-green-800">
                 <div className="w-2 h-2 bg-green-600 rounded-full"></div>
                 <span className="text-sm font-medium">
-                  Displaying {storedContent.length} analyzed articles for potential digest generation.
+                  Preview: {storedContent.length} analyzed articles for the selected '{activeDigestType}' period.
                 </span>
               </div>
             </div>
             <div className="space-y-6">
-              <h3 className="text-lg font-semibold text-gray-900">Your Analyzed Content (Preview)</h3>
+              <h3 className="text-lg font-semibold text-gray-900">Analyzed Content Preview (for selected period)</h3>
               <div className="space-y-2">{contentItems}</div>
               {storedContent.length > 10 && (
                 <p className="text-sm text-gray-600 text-center">
@@ -319,7 +196,18 @@ export default function DigestsView() {
                 </p>
               )}
             </div>
-          </>
+          </div>
+        )}
+
+        {!isLoading && !error && storedContent.length === 0 && (
+           <div className="mt-12 mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+             <div className="flex items-center gap-2 text-amber-800">
+               <div className="w-2 h-2 bg-amber-600 rounded-full"></div>
+               <span className="text-sm font-medium">
+                 No analyzed articles found for the '{activeDigestType}' period to preview.
+               </span>
+             </div>
+           </div>
         )}
 
 
