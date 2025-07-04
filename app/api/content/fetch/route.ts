@@ -1,56 +1,97 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server";
+import * as cheerio from 'cheerio';
 
 export async function POST(request: NextRequest) {
   try {
-    const { url } = await request.json()
+    const { url } = await request.json();
 
     if (!url) {
-      return NextResponse.json({ error: "URL is required" }, { status: 400 })
+      return NextResponse.json({ error: "URL is required" }, { status: 400 });
     }
 
-    // Fetch the content from the URL
     const response = await fetch(url, {
       headers: {
-        "User-Agent": "Pensive Content Analyzer/1.0",
+        "User-Agent": "Pensive Content Analyzer/1.0 (compatible; PensiveBot/1.0; +http://pensive.app/bot.html)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
       },
-    })
+    });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch content: ${response.statusText}`)
+      console.error(`Failed to fetch content from ${url}: ${response.status} ${response.statusText}`);
+      throw new Error(`Failed to fetch content: ${response.status} ${response.statusText}`);
     }
 
-    const html = await response.text()
+    const html = await response.text();
+    const $ = cheerio.load(html);
 
-    // Basic HTML parsing to extract title and content
-    // In a production app, you'd want to use a proper HTML parser like cheerio
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
-    const title = titleMatch ? titleMatch[1].trim() : "Untitled"
+    // Extract title
+    const title =
+      $('meta[property="og:title"]').attr('content') ||
+      $('meta[name="twitter:title"]').attr('content') ||
+      $('title').text() ||
+      "Untitled";
 
-    // Simple content extraction (you'd want something more sophisticated)
-    const contentMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
-    let content = contentMatch ? contentMatch[1] : html
+    // Attempt to extract main content, then fallback to body
+    let mainContentElement = $('article').first();
+    if (mainContentElement.length === 0) {
+      mainContentElement = $('main').first();
+    }
+    if (mainContentElement.length === 0) {
+      // Common class names for main content areas
+      const commonSelectors = ['#content', '.content', '#main', '.main', '#article', '.article',
+                               '.post-content', '.entry-content', '.post-body', '.article-body'];
+      for (const selector of commonSelectors) {
+        mainContentElement = $(selector).first();
+        if (mainContentElement.length > 0) break;
+      }
+    }
+     // If still no main content element, fallback to body
+    if (mainContentElement.length === 0) {
+        mainContentElement = $('body');
+    }
 
-    // Remove HTML tags and clean up
-    content = content
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
 
-    // Limit content length for analysis
-    if (content.length > 10000) {
-      content = content.substring(0, 10000) + "..."
+    // Remove unwanted elements like scripts, styles, nav, footer, ads etc.
+    mainContentElement.find('script, style, nav, footer, header, aside, form, noscript, iframe, [aria-hidden="true"]').remove();
+    // Remove elements that are often visually hidden but might contain text
+    mainContentElement.find('.sr-only, .visually-hidden, [style*="display:none"], [style*="visibility:hidden"]').remove();
+
+
+    // Get text and clean it up
+    let content = mainContentElement.text();
+
+    // Fallback if text extraction yields very little (e.g. SPA heavily reliant on JS for content)
+    if (content.trim().length < 200 && $('body').length) { // 200 is an arbitrary threshold
+        const bodyText = $('body').text();
+        if (bodyText.trim().length > content.trim().length) {
+            // A very basic attempt to clean body text if main content is poor
+            $('body script, body style, body nav, body footer, body header, body aside, body form, body noscript, body iframe').remove();
+            content = $('body').text();
+        }
+    }
+
+    content = content.replace(/\s\s+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+
+
+    // Limit content length
+    const maxLength = 25000; // Increased limit for potentially better analysis context
+    if (content.length > maxLength) {
+      content = content.substring(0, maxLength) + "...";
     }
 
     return NextResponse.json({
-      title,
-      content,
+      title: title.trim(),
+      content: content.trim(),
       url,
       fetchedAt: new Date().toISOString(),
-    })
+    });
+
   } catch (error) {
-    console.error("Error fetching content:", error)
-    return NextResponse.json({ error: "Failed to fetch content from URL" }, { status: 500 })
+    const urlParam = new URL(request.url).searchParams.get('url');
+    console.error(`Error fetching content for URL ${urlParam}:`, error);
+    return NextResponse.json({
+        error: `Failed to fetch or process content from URL. ${error instanceof Error ? error.message : 'Unknown error'}`,
+        url: urlParam
+    }, { status: 500 });
   }
 }

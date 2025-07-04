@@ -27,11 +27,16 @@ export async function GET(request: NextRequest) {
     return new NextResponse(html, {
       headers: {
         "Content-Type": "text/html",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": "*", // Consider if this is appropriate or should be more restrictive
       },
     })
   } catch (error) {
-    console.error("Error extracting podcast page:", error)
-    return NextResponse.json({ error: "Failed to extract podcast page" }, { status: 500 })
+    const urlParam = new URL(request.url).searchParams.get('url');
+    console.error(`Error extracting page content for URL ${urlParam}:`, error);
+    return NextResponse.json({
+        error: "Failed to extract page content",
+        details: error instanceof Error ? error.message : "Unknown error",
+        url: urlParam
+    }, { status: 500 });
   }
 }

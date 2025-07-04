@@ -1,50 +1,86 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server";
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { cookies } from 'next/headers';
 
 export async function POST(request: NextRequest) {
-  try {
-    const { timeframe, content, userId } = await request.json()
+  const cookieStore = cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          cookieStore.set({ name, value, ...options });
+        },
+        remove(name: string, options: CookieOptions) {
+          cookieStore.delete({ name, ...options });
+        },
+      },
+    }
+  );
 
-    if (!content || content.length === 0) {
-      return NextResponse.json({ error: "No content provided for digest" }, { status: 400 })
+  try {
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      console.error("Unauthorized attempt to generate digest:", authError);
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Prepare content summary for Grok
+    const currentUserId = user.id;
+    // const { timeframe, content, userId /* userId from body is removed */ } = await request.json();
+    const { timeframe, content } = await request.json();
+
+
+    if (!content || !Array.isArray(content) || content.length === 0) {
+      return NextResponse.json({ error: "No content provided for digest" }, { status: 400 });
+    }
+
     const contentSummary = content
       .map(
         (item: any, index: number) => `
-${index + 1}. **${item.title}** (${item.priority})
-   Source: ${item.source}
-   URL: ${item.url}
-   Summary: ${item.summary}
-   Tags: ${item.tags.join(", ")}
+${index + 1}. **${item.title}** (${item.priority || 'N/A'})
+   Source: ${item.source || 'N/A'}
+   URL: ${item.url || 'N/A'}
+   Summary: ${item.summary || 'N/A'}
+   Tags: ${(item.tags || []).join(", ")}
 `,
       )
-      .join("\n")
+      .join("\n");
 
-    const prompt = `Create a comprehensive weekly digest for a user's learning content. 
+    const prompt = `Create a comprehensive ${timeframe} digest for a user's learning content.
 
-Here's what they consumed this week:
+Here's what they consumed this ${timeframe}:
 
 ${contentSummary}
 
 Please create a well-structured digest that includes:
 
-1. **Executive Summary** - Key themes and insights from this week
-2. **Priority Content** - Highlight the most important items they should focus on
-3. **Key Concepts** - Main concepts and ideas discovered
-4. **Connections** - How different pieces of content relate to each other
-5. **Action Items** - Suggested next steps or follow-up reading
-6. **Weekly Stats** - Brief statistics about their learning
+1. **Executive Summary** - Key themes and insights from this ${timeframe}.
+2. **Priority Content** - Highlight the most important items they should focus on.
+3. **Key Concepts** - Main concepts and ideas discovered.
+4. **Connections** - How different pieces of content relate to each other.
+5. **Action Items** - Suggested next steps or follow-up reading.
+6. **Weekly Stats** - Brief statistics about their learning (e.g., number of items).
 
 Make it engaging, insightful, and actionable. Format it in clean HTML for email delivery.
 
-The user is User ${userId?.replace("user_", "") || "Unknown"}.`
+The user's ID is ${currentUserId}. Tailor the tone to be encouraging and professional.`;
+
+    const apiKey = process.env.XAI_API_KEY;
+    if (!apiKey) {
+        console.error("XAI_API_KEY is not set. Cannot generate digest.");
+        return NextResponse.json({ error: "Digest generation service is not configured." }, { status: 503 });
+    }
 
     const response = await fetch("https://api.x.ai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.XAI_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         messages: [
@@ -58,23 +94,25 @@ The user is User ${userId?.replace("user_", "") || "Unknown"}.`
             content: prompt,
           },
         ],
-        model: "grok-beta",
+        model: "grok-beta", // Consider updating if a newer/better model is available
         stream: false,
         temperature: 0.7,
+        max_tokens: 3000, // Increased max_tokens for potentially longer digests
       }),
-    })
+    });
 
     if (!response.ok) {
-      const errorText = await response.text()
-      console.error("Grok API error:", response.status, errorText)
-      throw new Error(`Grok API error: ${response.status}`)
+      const errorText = await response.text();
+      console.error("Grok API error:", response.status, errorText);
+      throw new Error(`Grok API error: ${response.status} - ${errorText.substring(0,100)}`);
     }
 
-    const data = await response.json()
-    const digestContent = data.choices[0]?.message?.content
+    const data = await response.json();
+    const digestContent = data.choices?.[0]?.message?.content;
 
     if (!digestContent) {
-      throw new Error("No digest content generated")
+      console.error("No digest content generated by Grok API. Response:", data);
+      throw new Error("No digest content generated by AI service");
     }
 
     return NextResponse.json({
@@ -83,15 +121,16 @@ The user is User ${userId?.replace("user_", "") || "Unknown"}.`
       timeframe,
       itemCount: content.length,
       generatedAt: new Date().toISOString(),
-    })
+    });
+
   } catch (error) {
-    console.error("Digest generation error:", error)
+    console.error("Digest generation error:", error);
     return NextResponse.json(
       {
         error: "Failed to generate digest",
         details: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 },
-    )
+    );
   }
 }
