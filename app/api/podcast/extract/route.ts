@@ -1,13 +1,26 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server";
+import { z } from 'zod';
+
+// Define Zod schema for the search parameters
+const extractParamsSchema = z.object({
+  url: z.string().url({ message: "Invalid URL format" }).min(1, { message: "URL parameter is required" }),
+});
 
 export async function GET(request: NextRequest) {
+  const urlParamForLogging = new URL(request.url).searchParams.get('url'); // For logging before parsing
   try {
-    const { searchParams } = new URL(request.url)
-    const url = searchParams.get("url")
+    const { searchParams } = new URL(request.url);
+    const params = Object.fromEntries(searchParams.entries());
 
-    if (!url) {
-      return NextResponse.json({ error: "URL parameter is required" }, { status: 400 })
+    const validationResult = extractParamsSchema.safeParse(params);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten().fieldErrors },
+        { status: 400 }
+      );
     }
+    const { url } = validationResult.data; // Use validated and typed data
 
     // Fetch the page content
     const response = await fetch(url, {

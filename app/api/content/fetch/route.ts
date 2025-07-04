@@ -1,13 +1,25 @@
 import { type NextRequest, NextResponse } from "next/server";
 import * as cheerio from 'cheerio';
+import { z } from 'zod';
+
+// Define Zod schema for the request body
+const fetchContentSchema = z.object({
+  url: z.string().url({ message: "Invalid URL format" }).min(1, { message: "URL cannot be empty" }),
+});
 
 export async function POST(request: NextRequest) {
   try {
-    const { url } = await request.json();
+    const body = await request.json();
+    const validationResult = fetchContentSchema.safeParse(body);
 
-    if (!url) {
-      return NextResponse.json({ error: "URL is required" }, { status: 400 });
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten() },
+        { status: 400 }
+      );
     }
+
+    const { url } = validationResult.data; // Use validated and typed data
 
     const response = await fetch(url, {
       headers: {

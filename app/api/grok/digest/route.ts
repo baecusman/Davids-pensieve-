@@ -1,6 +1,26 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { z } from 'zod';
+
+// Zod schema for individual content items (similar to DigestItem)
+const contentItemSchema = z.object({
+  title: z.string().min(1, "Title cannot be empty"),
+  summary: z.string().optional(), // Making summary optional as it's sometimes 'N/A' in prompt
+  priority: z.enum(["skim", "read", "deep-dive"]).optional(), // Optional as per prompt template
+  url: z.string().url("Invalid URL format").optional(), // Optional as per prompt template
+  tags: z.array(z.string()).optional(), // Optional as per prompt template
+  source: z.string().optional(),
+  // analyzedAt is not used in the prompt construction, so optional or omit
+});
+
+// Zod schema for the request body
+const grokDigestSchema = z.object({
+  timeframe: z.enum(["weekly", "monthly", "quarterly"]), // Assuming these are the valid timeframes
+  content: z.array(contentItemSchema).min(1, "At least one content item is required"),
+  // userId is removed from body, taken from auth session
+});
+
 
 export async function POST(request: NextRequest) {
   const cookieStore = cookies();
@@ -31,17 +51,24 @@ export async function POST(request: NextRequest) {
     }
 
     const currentUserId = user.id;
-    // const { timeframe, content, userId /* userId from body is removed */ } = await request.json();
-    const { timeframe, content } = await request.json();
 
+    const body = await request.json();
+    const validationResult = grokDigestSchema.safeParse(body);
 
-    if (!content || !Array.isArray(content) || content.length === 0) {
-      return NextResponse.json({ error: "No content provided for digest" }, { status: 400 });
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten() },
+        { status: 400 }
+      );
     }
+
+    const { timeframe, content } = validationResult.data; // Use validated data
+
+    // The check for content length is now handled by Zod schema's .min(1)
 
     const contentSummary = content
       .map(
-        (item: any, index: number) => `
+        (item: z.infer<typeof contentItemSchema>, index: number) => `
 ${index + 1}. **${item.title}** (${item.priority || 'N/A'})
    Source: ${item.source || 'N/A'}
    URL: ${item.url || 'N/A'}

@@ -1,8 +1,15 @@
 import { type NextRequest, NextResponse } from "next/server";
 import Parser from 'rss-parser';
 import * as cheerio from 'cheerio';
+import { z } from 'zod';
 
 const RSS_PARSER_TIMEOUT = 10000; // 10 seconds timeout for fetching RSS feed
+
+// Zod schema for query parameters
+const latestEpisodesParamsSchema = z.object({
+  url: z.string().url({ message: "Invalid URL format" }).min(1, { message: "URL parameter is required" }),
+  lastChecked: z.string().datetime({ message: "Invalid date format for lastChecked" }).optional(),
+});
 
 interface Episode {
   id: string;
@@ -242,16 +249,21 @@ async function getYouTubeEpisodes(url: string, lastChecked: Date): Promise<NextR
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const url = searchParams.get("url");
-    const lastCheckedParam = searchParams.get("lastChecked");
+    const params = Object.fromEntries(searchParams.entries());
 
-    if (!url) {
-      return NextResponse.json({ error: "URL parameter is required" }, { status: 400 });
+    const validationResult = latestEpisodesParamsSchema.safeParse(params);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten().fieldErrors },
+        { status: 400 }
+      );
     }
+    const { url, lastChecked: lastCheckedParam } = validationResult.data; // Use validated data
 
     // Default to fetching episodes from the last 7 days if lastChecked is not provided or invalid
     let lastCheckedDate;
-    if (lastCheckedParam && !isNaN(new Date(lastCheckedParam).getTime())) {
+    if (lastCheckedParam) { // Already validated as datetime string by Zod
         lastCheckedDate = new Date(lastCheckedParam);
     } else {
         lastCheckedDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);

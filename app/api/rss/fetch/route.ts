@@ -1,5 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server";
 import Parser from 'rss-parser';
+import { z } from 'zod';
+
+// Zod schema for the request body
+const rssFetchSchema = z.object({
+  url: z.string().url({ message: "Invalid URL format" }).min(1, { message: "URL cannot be empty" }),
+});
 
 interface RSSItem {
   title: string;
@@ -38,13 +44,19 @@ interface RSSFeed {
 const RSS_PARSER_TIMEOUT = 10000; // 10 seconds timeout
 
 export async function POST(request: NextRequest) {
-  const urlParam = new URL(request.url).searchParams.get('url'); // For logging
+  let requestUrlFromBody: string | undefined; // For logging in catch block if body parsing fails or validation fails early
   try {
-    const { url } = await request.json();
+    const body = await request.json();
+    requestUrlFromBody = body.url; // Capture for logging before validation
+    const validationResult = rssFetchSchema.safeParse(body);
 
-    if (!url) {
-      return NextResponse.json({ error: "URL is required" }, { status: 400 });
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten() },
+        { status: 400 }
+      );
     }
+    const { url } = validationResult.data; // Use validated url
 
     console.log(`Fetching RSS feed: ${url}`);
 
@@ -95,14 +107,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(responseFeed);
 
   } catch (error) {
-    console.error(`Error fetching RSS feed for URL ${urlParam}:`, error);
+    console.error(`Error fetching RSS feed for URL ${requestUrlFromBody || 'unknown'}:`, error);
     let errorMessage = "Failed to fetch or parse RSS feed";
     if (error instanceof Error) {
         errorMessage = error.message.includes('timeout') ? 'Request to RSS feed timed out' : error.message;
     }
     return NextResponse.json({
         error: errorMessage,
-        url: urlParam
+        url: requestUrlFromBody // Log the URL received in the request if available
     }, { status: 500 });
   }
 }

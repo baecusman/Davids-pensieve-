@@ -1,6 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { parseStringPromise as parseXmlString } from 'xml2js';
-import * as cheerio from 'cheerio'; // For parsing HTML in fallback
+import * as cheerio from 'cheerio';
+import { z } from 'zod';
+
+// Zod schema for query parameters
+const youtubeCaptionsParamsSchema = z.object({
+  videoId: z.string().min(1, { message: "videoId parameter is required" })
+    // Basic regex for YouTube video ID format, can be made more strict
+    .regex(/^[a-zA-Z0-9_-]{11}$/, { message: "Invalid YouTube videoId format" }),
+});
 
 // Function to parse YouTube's timedtext XML (srv3 format is often XML-like)
 async function parseSrv3Captions(xmlData: string): Promise<string> {
@@ -111,14 +119,20 @@ function extractTranscriptFromHtml(html: string): string | null {
 }
 
 export async function GET(request: NextRequest) {
-  const urlParam = new URL(request.url).searchParams.get('videoId'); // For logging
+  const originalVideoIdParam = new URL(request.url).searchParams.get('videoId'); // For logging in catch
   try {
     const { searchParams } = new URL(request.url);
-    const videoId = searchParams.get("videoId");
+    const params = Object.fromEntries(searchParams.entries());
 
-    if (!videoId) {
-      return NextResponse.json({ error: "videoId parameter is required" }, { status: 400 });
+    const validationResult = youtubeCaptionsParamsSchema.safeParse(params);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten().fieldErrors },
+        { status: 400 }
+      );
     }
+    const { videoId } = validationResult.data; // Use validated videoId
 
     const captionUrl = `https://www.youtube.com/api/timedtext?lang=en&v=${videoId}&fmt=srv3`;
     let captionsText = "";
@@ -166,10 +180,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "No captions found or available for this video." }, { status: 404 });
 
   } catch (error) {
-    console.error(`Error getting YouTube captions for videoId ${urlParam}:`, error);
+    console.error(`Error getting YouTube captions for videoId ${originalVideoIdParam}:`, error);
     return NextResponse.json({
         error: "Failed to get YouTube captions",
-        details: error instanceof Error ? error.message : "Unknown error"
+        details: error instanceof Error ? error.message : "Unknown error",
+        videoId: originalVideoIdParam
     }, { status: 500 });
   }
 }

@@ -1,5 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server";
 import * as cheerio from 'cheerio';
+import { z } from 'zod';
+
+// Define Zod schema for the search parameters
+const showInfoParamsSchema = z.object({
+  url: z.string().url({ message: "Invalid URL format" }).min(1, { message: "URL parameter is required" }),
+});
 
 // Helper to absolutize URLs
 function absolutizeUrl(relativeOrAbsoluteUrl: string, baseUrl: string): string {
@@ -49,13 +55,20 @@ async function discoverFeedInHtml(html: string, pageUrl: string): Promise<string
 }
 
 export async function GET(request: NextRequest) {
+  const originalUrlParam = new URL(request.url).searchParams.get('url'); // For logging in catch block
   try {
     const { searchParams } = new URL(request.url);
-    const pageUrl = searchParams.get("url");
+    const params = Object.fromEntries(searchParams.entries());
 
-    if (!pageUrl) {
-      return NextResponse.json({ error: "URL parameter is required" }, { status: 400 });
+    const validationResult = showInfoParamsSchema.safeParse(params);
+
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten().fieldErrors },
+        { status: 400 }
+      );
     }
+    const { url: pageUrl } = validationResult.data; // Use validated pageUrl
 
     const response = await fetch(pageUrl, {
       headers: {
@@ -137,14 +150,15 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error("Error extracting show info for URL:", searchParams.get("url"), error);
+    // Use originalUrlParam for logging if validationResult.data.url is not available
+    console.error(`Error extracting show info for URL "${originalUrlParam}":`, error);
     return NextResponse.json(
       {
         title: "Unknown Show",
         description: "Could not extract show information due to an error.",
         rssUrl: null,
         imageUrl: null,
-        originalUrl: searchParams.get("url"),
+        originalUrl: originalUrlParam, // Log the original attempted URL
         error: error instanceof Error ? error.message : "An unknown error occurred",
       },
       { status: 500 },
