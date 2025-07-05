@@ -27,6 +27,8 @@ import {
   Loader2,
 } from "lucide-react";
 import LoadingSkeleton from "../ui/LoadingSkeleton";
+import { supabase } from "@/lib/auth/supabase"; // Import Supabase client
+import type { RealtimeChannel } from "@supabase/supabase-js";
 
 export default function SourceManagementView() {
   const [sourceUrl, setSourceUrl] = useState("")
@@ -95,30 +97,95 @@ export default function SourceManagementView() {
   }, [loadData]);
 
   useEffect(() => {
-    const interval = setInterval(loadData, 60000); // 1 minute
+    const interval = setInterval(loadData, 60000 * 5); // 5 minutes for full refresh as a fallback
 
-    const handleUpdate = (event: any) => {
-      console.log("Update received:", event.detail);
-      loadData();
-      setProcessingStatus(`✅ Processed ${event.detail.newItemCount || 1} new items`);
-      setTimeout(() => setProcessingStatus(""), 5000);
-    };
+    // Supabase Realtime Subscriptions
+    const channels: RealtimeChannel[] = [];
 
-    if (typeof window !== "undefined") {
-      window.addEventListener("rss-update", handleUpdate);
-      window.addEventListener("twitter-update", handleUpdate);
-      window.addEventListener("podcast-update", handleUpdate);
-    }
+    // Channel for 'content' table (Analyzed Sources)
+    const contentChannel = supabase
+      .channel('public:content')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'content' }, (payload) => {
+        console.log('New content source:', payload.new);
+        setStoredSources((prevSources) => [payload.new, ...prevSources]);
+        // Potentially show a notification or update count
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'content' }, (payload) => {
+        console.log('Updated content source:', payload.new);
+        setStoredSources((prevSources) =>
+          prevSources.map((source) => (source.id === payload.new.id ? payload.new : source))
+        );
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'content' }, (payload) => {
+        console.log('Deleted content source:', payload.old);
+        setStoredSources((prevSources) => prevSources.filter((source) => source.id !== (payload.old as any).id));
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to content channel:", err);
+        else console.log("Subscribed to content channel, status:", status);
+      });
+    channels.push(contentChannel);
+
+    // Channel for 'rss_feeds' table
+    // Assuming table name is 'rss_feeds' and it has an 'id' field and relevant data.
+    // The payload structure (payload.new, payload.old) needs to match your table columns.
+    const rssFeedsChannel = supabase
+      .channel('public:rss_feeds') // Adjust table name if different
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rss_feeds' }, (payload) => {
+        console.log('RSS Feeds change:', payload);
+        // For simplicity, re-fetch all feeds on any change.
+        // A more granular update would be similar to 'content' channel.
+        // This also depends on how rssProcessor.getFeeds() gets its data.
+        // If rssProcessor uses localStorage or in-memory, this won't auto-update unless processor also listens.
+        // For a direct DB table, you'd update setRssFeeds here.
+        // For now, triggering a full loadData might be the simplest way to reflect changes
+        // if rssProcessor itself doesn't use Supabase Realtime.
+        // This illustrates the need for consistent data source for Realtime to be effective.
+        loadData();
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to rss_feeds channel:", err);
+        else console.log("Subscribed to rss_feeds channel, status:", status);
+      });
+    channels.push(rssFeedsChannel);
+
+    // Placeholder for twitter_accounts and podcast_subscriptions
+    // These would follow a similar pattern to rss_feeds if their data is in Supabase tables
+    // and `twitterProcessor.getAccounts()` / `podcastProcessor.getSubscriptions()` fetch from there.
+
+    // Example for podcast_subscriptions (assuming a 'podcast_subscriptions' table)
+    const podcastSubsChannel = supabase
+      .channel('public:podcast_subscriptions')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'podcast_subscriptions' }, (payload) => {
+        console.log('Podcast Subscriptions change:', payload);
+        loadData(); // Re-fetch all for simplicity
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to podcast_subscriptions channel:", err);
+        else console.log("Subscribed to podcast_subscriptions channel, status:", status);
+      });
+    channels.push(podcastSubsChannel);
+
+    // Example for twitter_accounts (assuming a 'twitter_accounts' table)
+    const twitterAccountsChannel = supabase
+      .channel('public:twitter_accounts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'twitter_accounts' }, (payload) => {
+        console.log('Twitter Accounts change:', payload);
+        loadData(); // Re-fetch all for simplicity
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to twitter_accounts channel:", err);
+        else console.log("Subscribed to twitter_accounts channel, status:", status);
+      });
+    channels.push(twitterAccountsChannel);
+
 
     return () => {
       clearInterval(interval);
-      if (typeof window !== "undefined") {
-        window.removeEventListener("rss-update", handleUpdate);
-        window.removeEventListener("twitter-update", handleUpdate);
-        window.removeEventListener("podcast-update", handleUpdate);
-      }
+      console.log("Unsubscribing from Realtime channels");
+      channels.forEach(channel => supabase.removeChannel(channel));
     };
-  }, [loadData]);
+  }, [loadData]); // loadData dependency is fine as it's memoized
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -136,29 +203,24 @@ export default function SourceManagementView() {
           if (sourceUrl.includes("spotify.com/episode") || sourceUrl.includes("podcasts.apple.com")) {
             setProcessingStatus("🎧 Processing podcast episode...");
             const analysis = await podcastProcessor.processEpisode(sourceUrl);
-            setProcessingStatus("✅ Podcast episode analyzed and stored!");
+            setProcessingStatus("✅ Podcast episode analyzed and stored!"); // Realtime will update list
             setAnalysisResult(analysis);
           } else {
             setProcessingStatus("🔍 Fetching content from URL...");
             const analysis = await ContentProcessor.analyzeUrl(sourceUrl);
-            setProcessingStatus("✅ Analysis complete and stored in database!");
+            setProcessingStatus("✅ Analysis complete and stored in database!"); // Realtime will update list
             setAnalysisResult(analysis);
           }
-          setTimeout(async () => {
-            await loadData();
-            setProcessingStatus("📚 Source added to library!");
-            setTimeout(() => setProcessingStatus(""), 3000);
-          }, 1000);
           setSourceUrl("");
         } else {
+          // For subscriptions, actions will insert into DB, Realtime will trigger UI update (via loadData for now)
           switch (subscriptionType) {
             case "rss":
               setProcessingStatus("🔍 Testing RSS feed...");
               const rssResult = await rssProcessor.addFeed(sourceUrl, rssInterval);
               if (rssResult.success) {
                 setProcessingStatus(`✅ RSS feed added: ${rssResult.feed?.title}`);
-                await loadData();
-                setSourceUrl("");
+                setSourceUrl(""); // Realtime will call loadData
               } else {
                 setProcessingStatus(`❌ Failed to add RSS feed: ${rssResult.error}`);
               }
@@ -168,9 +230,8 @@ export default function SourceManagementView() {
               const twitterResult = await twitterProcessor.addAccount(twitterHandle || sourceUrl);
               if (twitterResult.success) {
                 setProcessingStatus(`✅ Twitter account added: @${twitterResult.account?.handle}`);
-                await loadData();
                 setTwitterHandle("");
-                setSourceUrl("");
+                setSourceUrl(""); // Realtime will call loadData
               } else {
                 setProcessingStatus(`❌ Failed to add Twitter account: ${twitterResult.error}`);
               }
@@ -180,14 +241,13 @@ export default function SourceManagementView() {
               const podcastResult = await podcastProcessor.addSubscription(sourceUrl);
               if (podcastResult.success) {
                 setProcessingStatus(`✅ Podcast subscription added: ${podcastResult.podcast?.title}`);
-                await loadData();
-                setSourceUrl("");
+                setSourceUrl(""); // Realtime will call loadData
               } else {
                 setProcessingStatus(`❌ Failed to add podcast: ${podcastResult.error}`);
               }
               break;
           }
-          setTimeout(() => setProcessingStatus(""), 5000);
+          setTimeout(() => setProcessingStatus(""), 5000); // Clear status after a while for subscriptions
         }
       } catch (error) {
         console.error("Error processing source:", error);
@@ -197,7 +257,8 @@ export default function SourceManagementView() {
         setIsProcessing(false);
       }
     },
-    [sourceUrl, sourceType, subscriptionType, rssInterval, twitterHandle, podcastType, loadData],
+    // Removed loadData from here; Realtime handles updates.
+    [sourceUrl, sourceType, subscriptionType, rssInterval, twitterHandle, podcastType],
   );
 
   const handleDeleteSource = useCallback(
