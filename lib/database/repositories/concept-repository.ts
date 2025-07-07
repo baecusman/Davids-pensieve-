@@ -1,75 +1,147 @@
-import { browserDatabase } from "../browser-database"
+import { supabase } from "../../auth/supabase"
 import type { ConceptEntity, RelationshipEntity, ContentEntity, AnalysisEntity } from "../schema"
 
 export class ConceptRepository {
-  private db = browserDatabase
-
-  findById(id: string): ConceptEntity | null {
-    return this.db.findById<ConceptEntity>("concepts", id)
+  async findById(id: string): Promise<ConceptEntity | null> {
+    const { data, error } = await supabase
+      .from<ConceptEntity>("concepts")
+      .select("*")
+      .eq("id", id)
+      .single()
+    if (error) {
+      console.error("Error fetching concept by id:", error)
+      return null
+    }
+    return data
   }
 
-  findByName(name: string): ConceptEntity | null {
-    return this.db.findByIndex<ConceptEntity>("concepts", "name", name)[0] || null
+  async findByName(name: string): Promise<ConceptEntity | null> {
+    const { data, error } = await supabase
+      .from<ConceptEntity>("concepts")
+      .select("*")
+      .eq("name", name)
+      .single()
+    if (error) {
+      console.error("Error fetching concept by name:", error)
+      return null
+    }
+    return data
   }
 
-  findByType(type: ConceptEntity["type"]): ConceptEntity[] {
-    return this.db.findByIndex<ConceptEntity>("concepts", "type", type)
+  async findByType(type: ConceptEntity["type"]): Promise<ConceptEntity[]> {
+    const { data, error } = await supabase
+      .from<ConceptEntity>("concepts")
+      .select("*")
+      .eq("type", type)
+    if (error) {
+      console.error("Error fetching concepts by type:", error)
+      return []
+    }
+    return data || []
   }
 
-  findAll(): ConceptEntity[] {
-    return this.db.findAll<ConceptEntity>("concepts", {
-      orderBy: { field: "frequency", direction: "desc" },
-    })
+  async findAll(): Promise<ConceptEntity[]> {
+    const { data, error } = await supabase
+      .from<ConceptEntity>("concepts")
+      .select("*")
+      .order("frequency", { ascending: false })
+    if (error) {
+      console.error("Error fetching all concepts:", error)
+      return []
+    }
+    return data || []
   }
 
-  searchConcepts(query: string): ConceptEntity[] {
-    return this.db.search<ConceptEntity>("concepts", query, ["name", "description"])
+  async searchConcepts(query: string): Promise<ConceptEntity[]> {
+    const { data, error } = await supabase
+      .from<ConceptEntity>("concepts")
+      .select("*")
+      .or(`name.ilike.%${query}%,description.ilike.%${query}%`)
+    if (error) {
+      console.error("Error searching concepts:", error)
+      return []
+    }
+    return data || []
   }
 
-  getConceptGraph(minFrequency = 1): {
+  async getConceptGraph(minFrequency = 1): Promise<{
     nodes: Array<ConceptEntity & { density: number }>
     edges: Array<RelationshipEntity & { weight: number }>
-  } {
-    // Get concepts above minimum frequency
-    const concepts = this.findAll().filter((c) => c.frequency >= minFrequency)
-    const conceptIds = new Set(concepts.map((c) => c.id))
+  }> {
+    const concepts = (await this.findAll()).filter((c) => c.frequency >= minFrequency)
+    const conceptIds = concepts.map((c) => c.id)
 
-    // Calculate density (normalized frequency)
+    if (conceptIds.length === 0) {
+      return { nodes: [], edges: [] }
+    }
+
     const maxFrequency = Math.max(...concepts.map((c) => c.frequency), 1)
     const nodes = concepts.map((concept) => ({
       ...concept,
       density: Math.min(100, (concept.frequency / maxFrequency) * 100),
     }))
 
-    // Get relationships between these concepts
-    const allRelationships = this.db.findAll<RelationshipEntity>("relationships")
-    const edges = allRelationships
-      .filter((rel) => conceptIds.has(rel.fromConceptId) && conceptIds.has(rel.toConceptId))
-      .map((rel) => ({
-        ...rel,
-        weight: rel.strength,
-      }))
+    const { data: allRelationships, error: relError } = await supabase
+      .from<RelationshipEntity>("relationships")
+      .select("*")
+      .in("fromConceptId", conceptIds)
+      .in("toConceptId", conceptIds)
+
+    if (relError) {
+      console.error("Error fetching relationships for concept graph:", relError)
+      return { nodes, edges: [] }
+    }
+
+    const edges = (allRelationships || []).map((rel) => ({
+      ...rel,
+      weight: rel.strength,
+    }))
 
     return { nodes, edges }
   }
 
-  getRelatedConcepts(conceptId: string, limit = 10): ConceptEntity[] {
-    // Find all relationships involving this concept
-    const outgoingRels = this.db.findByIndex<RelationshipEntity>("relationships", "fromConceptId", conceptId)
-    const incomingRels = this.db.findByIndex<RelationshipEntity>("relationships", "toConceptId", conceptId)
+  async getRelatedConcepts(conceptId: string, limit = 10): Promise<ConceptEntity[]> {
+    const { data: outgoingRels, error: outError } = await supabase
+      .from<RelationshipEntity>("relationships")
+      .select("toConceptId")
+      .eq("fromConceptId", conceptId)
+
+    if (outError) {
+      console.error("Error fetching outgoing relationships:", outError)
+      return []
+    }
+
+    const { data: incomingRels, error: inError } = await supabase
+      .from<RelationshipEntity>("relationships")
+      .select("fromConceptId")
+      .eq("toConceptId", conceptId)
+
+    if (inError) {
+      console.error("Error fetching incoming relationships:", inError)
+      return []
+    }
 
     const relatedIds = new Set<string>()
-    outgoingRels.forEach((rel) => relatedIds.add(rel.toConceptId))
-    incomingRels.forEach((rel) => relatedIds.add(rel.fromConceptId))
+    outgoingRels?.forEach((rel) => relatedIds.add(rel.toConceptId))
+    incomingRels?.forEach((rel) => relatedIds.add(rel.fromConceptId))
 
-    const relatedConcepts = Array.from(relatedIds)
-      .map((id) => this.findById(id))
-      .filter(Boolean) as ConceptEntity[]
+    if (relatedIds.size === 0) return []
 
-    return relatedConcepts.sort((a, b) => b.frequency - a.frequency).slice(0, limit)
+    const { data: relatedConcepts, error: conceptError } = await supabase
+      .from<ConceptEntity>("concepts")
+      .select("*")
+      .in("id", Array.from(relatedIds))
+      .order("frequency", { ascending: false })
+      .limit(limit)
+
+    if (conceptError) {
+      console.error("Error fetching related concepts:", conceptError)
+      return []
+    }
+    return relatedConcepts || []
   }
 
-  getConceptDetails(conceptId: string): {
+  async getConceptDetails(conceptId: string): Promise<{
     concept: ConceptEntity | null
     relatedConcepts: ConceptEntity[]
     articles: Array<{ content: ContentEntity; analysis: AnalysisEntity }>
@@ -78,8 +150,8 @@ export class ConceptRepository {
       outgoing: number
       types: Record<string, number>
     }
-  } {
-    const concept = this.findById(conceptId)
+  }> {
+    const concept = await this.findById(conceptId)
     if (!concept) {
       return {
         concept: null,
@@ -89,52 +161,90 @@ export class ConceptRepository {
       }
     }
 
-    const relatedConcepts = this.getRelatedConcepts(conceptId, 5)
+    const relatedConcepts = await this.getRelatedConcepts(conceptId, 5)
 
-    // Find articles that mention this concept
-    const analyses = this.db.findAll<AnalysisEntity>("analysis")
-    const relevantAnalyses = analyses.filter(
-      (analysis) =>
-        analysis.entities.some((entity) => entity.name === concept.name) || analysis.tags.includes(concept.name),
-    )
+    // Find analyses that mention this concept
+    const { data: analyses, error: analysisError } = await supabase
+      .from<AnalysisEntity>("analysis")
+      .select("*, content!inner(*)") // Assuming 'content' is a related table/view
+      .or(`entities.cs.{${concept.name}},tags.cs.{${concept.name}}`) // This syntax might need adjustment based on how entities/tags are stored (e.g., JSONB array)
 
-    const articles = relevantAnalyses
-      .map((analysis) => {
-        const content = this.db.findById<ContentEntity>("content", analysis.contentId)
-        return content ? { content, analysis } : null
-      })
-      .filter(Boolean) as Array<{ content: ContentEntity; analysis: AnalysisEntity }>
+    if (analysisError) {
+      console.error("Error fetching analyses for concept details:", analysisError)
+    }
+
+    const articles: Array<{ content: ContentEntity; analysis: AnalysisEntity }> = []
+    if (analyses) {
+        for (const analysis of analyses) {
+            // The content should already be joined if the query is correct.
+            // If not, an additional query for content would be needed here.
+            // This part assumes 'content' is directly available or joined.
+            // If 'analysis.content' is the ContentEntity:
+            if (analysis.content) { // Check if content is actually joined
+                 articles.push({ content: analysis.content as ContentEntity, analysis });
+            } else {
+                // Fallback or specific handling if content is not directly joined
+                const { data: contentData, error: contentError } = await supabase
+                    .from<ContentEntity>('content')
+                    .select('*')
+                    .eq('id', analysis.contentId)
+                    .single();
+                if (contentData && !contentError) {
+                    articles.push({ content: contentData, analysis });
+                } else if (contentError) {
+                    console.error("Error fetching content for analysis:", contentError.message);
+                }
+            }
+        }
+    }
+
 
     // Calculate relationship stats
-    const outgoingRels = this.db.findByIndex<RelationshipEntity>("relationships", "fromConceptId", conceptId)
-    const incomingRels = this.db.findByIndex<RelationshipEntity>("relationships", "toConceptId", conceptId)
+    const { count: incomingCount, error: inError } = await supabase
+      .from<RelationshipEntity>("relationships")
+      .select("id", { count: "exact" })
+      .eq("toConceptId", conceptId)
+
+    const { count: outgoingCount, error: outError } = await supabase
+      .from<RelationshipEntity>("relationships")
+      .select("id", { count: "exact" })
+      .eq("fromConceptId", conceptId)
+
+    const { data: allRelsData, error: typesError } = await supabase
+        .from<RelationshipEntity>("relationships")
+        .select("type")
+        .or(`fromConceptId.eq.${conceptId},toConceptId.eq.${conceptId}`)
 
     const types: Record<string, number> = {}
-    const allRels = [...outgoingRels, ...incomingRels]
-    allRels.forEach((rel) => {
-      types[rel.type] = (types[rel.type] || 0) + 1
-    })
+    if (typesError) {
+        console.error("Error fetching relationship types:", typesError)
+    } else if (allRelsData) {
+        allRelsData.forEach((rel) => {
+            types[rel.type] = (types[rel.type] || 0) + 1
+        })
+    }
+
 
     return {
       concept,
       relatedConcepts,
       articles,
       relationshipStats: {
-        incoming: incomingRels.length,
-        outgoing: outgoingRels.length,
+        incoming: inError ? 0 : incomingCount || 0,
+        outgoing: outError ? 0 : outgoingCount || 0,
         types,
       },
     }
   }
 
-  getTrendingConcepts(
+  async getTrendingConcepts(
     timeframe: "weekly" | "monthly" | "quarterly",
     limit = 10,
-  ): Array<{
+  ): Promise<Array<{
     concept: ConceptEntity
     growth: number
     recentMentions: number
-  }> {
+  }>> {
     const now = new Date()
     const cutoffDate = new Date()
 
@@ -150,100 +260,140 @@ export class ConceptRepository {
         break
     }
 
-    // Get recent content
-    const recentContent = this.db
-      .findAll<ContentEntity>("content")
-      .filter((content) => new Date(content.createdAt) >= cutoffDate)
+    const { data: recentContent, error: contentError } = await supabase
+      .from<ContentEntity>("content")
+      .select("id")
+      .gte("createdAt", cutoffDate.toISOString())
 
-    const recentContentIds = new Set(recentContent.map((c) => c.id))
+    if (contentError) {
+      console.error("Error fetching recent content for trending concepts:", contentError)
+      return []
+    }
+    if (!recentContent || recentContent.length === 0) return []
 
-    // Get recent analyses
-    const recentAnalyses = this.db
-      .findAll<AnalysisEntity>("analysis")
-      .filter((analysis) => recentContentIds.has(analysis.contentId))
+    const recentContentIds = recentContent.map((c) => c.id)
 
-    // Count concept mentions in recent content
+    const { data: recentAnalyses, error: analysisError } = await supabase
+      .from<AnalysisEntity>("analysis")
+      .select("entities, tags") // Assuming entities is an array of objects with 'name'
+      .in("contentId", recentContentIds)
+
+    if (analysisError) {
+      console.error("Error fetching recent analyses for trending concepts:", analysisError)
+      return []
+    }
+
     const conceptCounts = new Map<string, number>()
-
-    recentAnalyses.forEach((analysis) => {
-      analysis.entities.forEach((entity) => {
-        conceptCounts.set(entity.name, (conceptCounts.get(entity.name) || 0) + 1)
+    recentAnalyses?.forEach((analysis) => {
+      analysis.entities?.forEach((entity: any) => { // Consider defining a more specific type for entity if possible
+        if (entity && typeof entity.name === 'string') {
+            conceptCounts.set(entity.name, (conceptCounts.get(entity.name) || 0) + 1)
+        }
       })
-      analysis.tags.forEach((tag) => {
-        conceptCounts.set(tag, (conceptCounts.get(tag) || 0) + 1)
+      analysis.tags?.forEach((tag: string) => {
+         if (typeof tag === 'string') {
+            conceptCounts.set(tag, (conceptCounts.get(tag) || 0) + 1)
+         }
       })
     })
 
-    // Calculate trending scores
-    const trending = Array.from(conceptCounts.entries())
-      .map(([name, recentMentions]) => {
-        const concept = this.findByName(name)
-        if (!concept) return null
-
-        // Calculate growth rate (recent vs historical)
-        const historicalRate = concept.frequency / Math.max(1, concept.frequency)
-        const recentRate = recentMentions / Math.max(1, recentContent.length)
-        const growth = recentRate / Math.max(0.01, historicalRate)
-
-        return {
-          concept,
-          growth,
-          recentMentions,
-        }
-      })
-      .filter(Boolean) as Array<{
+    const trendingResults: Array<{
       concept: ConceptEntity
       growth: number
       recentMentions: number
-    }>
+    }> = []
 
-    return trending.sort((a, b) => b.growth - a.growth).slice(0, limit)
+    for (const [name, recentMentions] of conceptCounts.entries()) {
+      const concept = await this.findByName(name)
+      if (!concept) continue
+
+      const historicalRate = concept.frequency / Math.max(1, concept.frequency) // Avoid division by zero, though frequency should be > 0
+      const recentRate = recentMentions / Math.max(1, recentContent.length)
+      const growth = recentRate / Math.max(0.01, historicalRate) // Avoid division by zero for historicalRate
+
+      trendingResults.push({
+        concept,
+        growth,
+        recentMentions,
+      })
+    }
+
+    return trendingResults.sort((a, b) => b.growth - a.growth).slice(0, limit)
   }
 
-  updateConceptDescription(id: string, description: string): boolean {
-    return this.db.update<ConceptEntity>("concepts", id, { description })
+  async updateConceptDescription(id: string, description: string): Promise<boolean> {
+    const { error } = await supabase
+      .from<ConceptEntity>("concepts")
+      .update({ description, updatedAt: new Date().toISOString() })
+      .eq("id", id)
+    if (error) {
+      console.error("Error updating concept description:", error)
+      return false
+    }
+    return true
   }
 
-  mergeConceptByConcepts(sourceId: string, targetId: string): boolean {
-    const sourceConcept = this.findById(sourceId)
-    const targetConcept = this.findById(targetId)
+  async mergeConceptByConcepts(sourceId: string, targetId: string): Promise<boolean> {
+    const sourceConcept = await this.findById(sourceId)
+    const targetConcept = await this.findById(targetId)
 
     if (!sourceConcept || !targetConcept) return false
 
-    // Update relationships to point to target concept
-    const outgoingRels = this.db.findByIndex<RelationshipEntity>("relationships", "fromConceptId", sourceId)
-    const incomingRels = this.db.findByIndex<RelationshipEntity>("relationships", "toConceptId", sourceId)
+    // Start a transaction if your Supabase setup supports it easily, or handle rollback manually
+    // For simplicity, proceeding with individual calls. Consider Supabase functions for atomicity.
 
-    outgoingRels.forEach((rel) => {
-      this.db.update<RelationshipEntity>("relationships", rel.id, {
-        fromConceptId: targetId,
+    const { error: outgoingError } = await supabase
+      .from<RelationshipEntity>("relationships")
+      .update({ fromConceptId: targetId, updatedAt: new Date().toISOString() })
+      .eq("fromConceptId", sourceId)
+    if (outgoingError) {
+      console.error("Error updating outgoing relationships for merge:", outgoingError)
+      return false // Potentially rollback previous changes if in a transaction
+    }
+
+    const { error: incomingError } = await supabase
+      .from<RelationshipEntity>("relationships")
+      .update({ toConceptId: targetId, updatedAt: new Date().toISOString() })
+      .eq("toConceptId", sourceId)
+    if (incomingError) {
+      console.error("Error updating incoming relationships for merge:", incomingError)
+      return false // Potentially rollback
+    }
+
+    const { error: freqError } = await supabase
+      .from<ConceptEntity>("concepts")
+      .update({
+        frequency: targetConcept.frequency + sourceConcept.frequency,
+        updatedAt: new Date().toISOString(),
       })
-    })
+      .eq("id", targetId)
+    if (freqError) {
+      console.error("Error updating target concept frequency for merge:", freqError)
+      return false // Potentially rollback
+    }
 
-    incomingRels.forEach((rel) => {
-      this.db.update<RelationshipEntity>("relationships", rel.id, {
-        toConceptId: targetId,
-      })
-    })
-
-    // Update target concept frequency
-    this.db.update<ConceptEntity>("concepts", targetId, {
-      frequency: targetConcept.frequency + sourceConcept.frequency,
-    })
-
-    // Delete source concept
-    this.db.delete("concepts", sourceId)
+    const { error: deleteError } = await supabase
+      .from<ConceptEntity>("concepts")
+      .delete()
+      .eq("id", sourceId)
+    if (deleteError) {
+      console.error("Error deleting source concept for merge:", deleteError)
+      return false // Potentially rollback
+    }
 
     return true
   }
 
-  getConceptStats(): {
+  async getConceptStats(): Promise<{
     totalConcepts: number
     byType: Record<string, number>
     topConcepts: Array<{ name: string; frequency: number }>
     averageFrequency: number
-  } {
-    const concepts = this.findAll()
+  }> {
+    const concepts = await this.findAll()
+    if (concepts.length === 0) {
+      return { totalConcepts: 0, byType: {}, topConcepts: [], averageFrequency: 0 }
+    }
 
     const byType: Record<string, number> = {}
     let totalFrequency = 0
@@ -259,7 +409,7 @@ export class ConceptRepository {
       totalConcepts: concepts.length,
       byType,
       topConcepts,
-      averageFrequency: concepts.length > 0 ? totalFrequency / concepts.length : 0,
+      averageFrequency: totalFrequency / concepts.length,
     }
   }
 }

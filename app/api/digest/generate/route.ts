@@ -1,26 +1,44 @@
-import { generateText } from "ai"
-import { xai } from "@ai-sdk/xai"
-import { type NextRequest, NextResponse } from "next/server"
+import { generateText } from "ai";
+import { xai } from "@ai-sdk/xai";
+import { type NextRequest, NextResponse } from "next/server";
+import { z } from 'zod';
 
-interface DigestItem {
-  title: string
-  summary: string
-  fullSummary?: string
-  summaryType: "sentence" | "paragraph" | "full-read"
-  priority: "skim" | "read" | "deep-dive"
-  url: string
-  conceptTags: string[]
-  analyzedAt: string
-  source?: string
-}
+// Zod schema for individual DigestItem
+const digestItemSchema = z.object({
+  title: z.string().min(1, "Title cannot be empty"),
+  summary: z.string().min(1, "Summary cannot be empty"),
+  fullSummary: z.string().optional(),
+  summaryType: z.enum(["sentence", "paragraph", "full-read"]),
+  priority: z.enum(["skim", "read", "deep-dive"]),
+  url: z.string().url("Invalid URL format"),
+  conceptTags: z.array(z.string()),
+  analyzedAt: z.string().datetime("Invalid date format for analyzedAt"), // or z.date() if you parse it first
+  source: z.string().optional(),
+});
+
+// Zod schema for the request body
+const generateDigestSchema = z.object({
+  timeframe: z.enum(["weekly", "monthly", "quarterly"]),
+  articles: z.array(digestItemSchema).min(1, "At least one article is required for digest generation"),
+});
+
+interface DigestItem extends z.infer<typeof digestItemSchema> {}
 
 export async function POST(request: NextRequest) {
   try {
-    const { timeframe, articles } = await request.json() // 'weekly', 'monthly', 'quarterly'
+    const body = await request.json();
+    const validationResult = generateDigestSchema.safeParse(body);
 
-    if (!articles || articles.length === 0) {
-      return NextResponse.json({ error: "No articles provided for digest generation" }, { status: 400 })
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten() },
+        { status: 400 }
+      );
     }
+
+    const { timeframe, articles } = validationResult.data;
+
+    // The old check for articles.length === 0 is now covered by Zod's .min(1)
 
     // Separate analyzed vs historical content
     const analyzedArticles = articles.filter((a: DigestItem) => a.source === "analyzed")

@@ -25,7 +25,10 @@ import {
   Twitter,
   Headphones,
   Loader2,
-} from "lucide-react"
+} from "lucide-react";
+import LoadingSkeleton from "../ui/LoadingSkeleton";
+import { supabase } from "@/lib/auth/supabase"; // Import Supabase client
+import type { RealtimeChannel } from "@supabase/supabase-js";
 
 export default function SourceManagementView() {
   const [sourceUrl, setSourceUrl] = useState("")
@@ -34,269 +37,342 @@ export default function SourceManagementView() {
   const [rssInterval, setRssInterval] = useState(60) // minutes
   const [twitterHandle, setTwitterHandle] = useState("")
   const [podcastType, setPodcastType] = useState<"episode" | "subscription">("episode")
-  const [isProcessing, setIsProcessing] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false) // For form submission
   const [processingStatus, setProcessingStatus] = useState<string>("")
   const [analysisResult, setAnalysisResult] = useState<any>(null)
+
   const [storedSources, setStoredSources] = useState<any[]>([])
   const [rssFeeds, setRssFeeds] = useState<any[]>([])
   const [twitterFeeds, setTwitterFeeds] = useState<any[]>([])
   const [podcastFeeds, setPodcastFeeds] = useState<any[]>([])
+
   const [isDeleting, setIsDeleting] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<"sources" | "feeds" | "twitter" | "podcasts">("sources")
   const [rssStatus, setRssStatus] = useState<any>({})
 
-  // Memoized data loading for performance
-  const loadData = useCallback(() => {
+  const [isLoadingData, setIsLoadingData] = useState(true);
+  const [dataError, setDataError] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    setIsLoadingData(true);
+    setDataError(null);
     try {
-      const sources = ContentProcessor.getStoredContent()
-      const feeds = rssProcessor.getFeeds()
-      const twitterAccounts = twitterProcessor.getAccounts()
-      const podcasts = podcastProcessor.getSubscriptions()
-      const status = rssProcessor.getProcessingStatus()
+      const sourcesResult = await ContentProcessor.getStoredContent();
+      const sources = Array.isArray(sourcesResult) ? sourcesResult : sourcesResult.items || [];
+
+      const feeds = await rssProcessor.getFeeds();
+      const twitterAccounts = await twitterProcessor.getAccounts();
+      const podcasts = await podcastProcessor.getSubscriptions();
+      const status = await rssProcessor.getProcessingStatus();
 
       console.log(
         "Loaded:",
-        sources.length,
-        "sources,",
-        feeds.length,
-        "feeds,",
-        twitterAccounts.length,
-        "twitter,",
-        podcasts.length,
-        "podcasts",
-      )
+        sources.length, "sources,",
+        feeds.length, "feeds,",
+        twitterAccounts.length, "twitter,",
+        podcasts.length, "podcasts"
+      );
 
-      setStoredSources(sources)
-      setRssFeeds(feeds)
-      setTwitterFeeds(twitterAccounts)
-      setPodcastFeeds(podcasts)
-      setRssStatus(status)
-    } catch (error) {
-      console.error("Error loading data:", error)
-      setStoredSources([])
-      setRssFeeds([])
-      setTwitterFeeds([])
-      setPodcastFeeds([])
+      setStoredSources(sources);
+      setRssFeeds(feeds);
+      setTwitterFeeds(twitterAccounts);
+      setPodcastFeeds(podcasts);
+      setRssStatus(status);
+
+    } catch (error: any) {
+      console.error("Error loading data:", error);
+      setDataError(`Failed to load source data: ${error.message || "Unknown error"}`);
+      setStoredSources([]);
+      setRssFeeds([]);
+      setTwitterFeeds([]);
+      setPodcastFeeds([]);
+    } finally {
+      setIsLoadingData(false);
     }
-  }, [])
+  }, []);
 
-  // Debounced loading for performance
   useEffect(() => {
-    const timeoutId = setTimeout(loadData, 100)
-    return () => clearTimeout(timeoutId)
-  }, [loadData])
+    const timeoutId = setTimeout(() => { loadData(); }, 100); // Initial load
+    return () => clearTimeout(timeoutId);
+  }, [loadData]);
 
-  // Auto-refresh with longer intervals for performance
   useEffect(() => {
-    const interval = setInterval(loadData, 60000) // 1 minute instead of 30 seconds
+    const interval = setInterval(loadData, 60000 * 5); // 5 minutes for full refresh as a fallback
 
-    // Listen for updates
-    const handleUpdate = (event: any) => {
-      console.log("Update received:", event.detail)
-      loadData()
-      setProcessingStatus(`✅ Processed ${event.detail.newItemCount || 1} new items`)
-      setTimeout(() => setProcessingStatus(""), 5000)
-    }
+    // Supabase Realtime Subscriptions
+    const channels: RealtimeChannel[] = [];
 
-    if (typeof window !== "undefined") {
-      window.addEventListener("rss-update", handleUpdate)
-      window.addEventListener("twitter-update", handleUpdate)
-      window.addEventListener("podcast-update", handleUpdate)
-    }
+    // Channel for 'content' table (Analyzed Sources)
+    const contentChannel = supabase
+      .channel('public:content')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'content' }, (payload) => {
+        console.log('New content source:', payload.new);
+        setStoredSources((prevSources) => [payload.new, ...prevSources]);
+        // Potentially show a notification or update count
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'content' }, (payload) => {
+        console.log('Updated content source:', payload.new);
+        setStoredSources((prevSources) =>
+          prevSources.map((source) => (source.id === payload.new.id ? payload.new : source))
+        );
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'content' }, (payload) => {
+        console.log('Deleted content source:', payload.old);
+        setStoredSources((prevSources) => prevSources.filter((source) => source.id !== (payload.old as any).id));
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to content channel:", err);
+        else console.log("Subscribed to content channel, status:", status);
+      });
+    channels.push(contentChannel);
+
+    // Channel for 'rss_feeds' table
+    // Assuming table name is 'rss_feeds' and it has an 'id' field and relevant data.
+    // The payload structure (payload.new, payload.old) needs to match your table columns.
+    const rssFeedsChannel = supabase
+      .channel('public:rss_feeds') // Adjust table name if different
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rss_feeds' }, (payload) => {
+        console.log('RSS Feeds change:', payload);
+        // For simplicity, re-fetch all feeds on any change.
+        // A more granular update would be similar to 'content' channel.
+        // This also depends on how rssProcessor.getFeeds() gets its data.
+        // If rssProcessor uses localStorage or in-memory, this won't auto-update unless processor also listens.
+        // For a direct DB table, you'd update setRssFeeds here.
+        // For now, triggering a full loadData might be the simplest way to reflect changes
+        // if rssProcessor itself doesn't use Supabase Realtime.
+        // This illustrates the need for consistent data source for Realtime to be effective.
+        loadData();
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to rss_feeds channel:", err);
+        else console.log("Subscribed to rss_feeds channel, status:", status);
+      });
+    channels.push(rssFeedsChannel);
+
+    // Placeholder for twitter_accounts and podcast_subscriptions
+    // These would follow a similar pattern to rss_feeds if their data is in Supabase tables
+    // and `twitterProcessor.getAccounts()` / `podcastProcessor.getSubscriptions()` fetch from there.
+
+    // Example for podcast_subscriptions (assuming a 'podcast_subscriptions' table)
+    const podcastSubsChannel = supabase
+      .channel('public:podcast_subscriptions')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'podcast_subscriptions' }, (payload) => {
+        console.log('Podcast Subscriptions change:', payload);
+        loadData(); // Re-fetch all for simplicity
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to podcast_subscriptions channel:", err);
+        else console.log("Subscribed to podcast_subscriptions channel, status:", status);
+      });
+    channels.push(podcastSubsChannel);
+
+    // Example for twitter_accounts (assuming a 'twitter_accounts' table)
+    const twitterAccountsChannel = supabase
+      .channel('public:twitter_accounts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'twitter_accounts' }, (payload) => {
+        console.log('Twitter Accounts change:', payload);
+        loadData(); // Re-fetch all for simplicity
+      })
+      .subscribe((status, err) => {
+        if (err) console.error("Error subscribing to twitter_accounts channel:", err);
+        else console.log("Subscribed to twitter_accounts channel, status:", status);
+      });
+    channels.push(twitterAccountsChannel);
+
 
     return () => {
-      clearInterval(interval)
-      if (typeof window !== "undefined") {
-        window.removeEventListener("rss-update", handleUpdate)
-        window.removeEventListener("twitter-update", handleUpdate)
-        window.removeEventListener("podcast-update", handleUpdate)
-      }
-    }
-  }, [loadData])
+      clearInterval(interval);
+      console.log("Unsubscribing from Realtime channels");
+      channels.forEach(channel => supabase.removeChannel(channel));
+    };
+  }, [loadData]); // loadData dependency is fine as it's memoized
 
-  // Optimized submit handler
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
-      e.preventDefault()
-
+      e.preventDefault();
       if (!sourceUrl.trim()) {
-        setProcessingStatus("❌ Please enter a valid URL")
-        setTimeout(() => setProcessingStatus(""), 3000)
-        return
+        setProcessingStatus("❌ Please enter a valid URL");
+        setTimeout(() => setProcessingStatus(""), 3000);
+        return;
       }
-
-      setIsProcessing(true)
-      setProcessingStatus("Starting analysis...")
-      setAnalysisResult(null)
-
+      setIsProcessing(true);
+      setProcessingStatus("Starting analysis...");
+      setAnalysisResult(null);
       try {
         if (sourceType === "one-off") {
-          // Handle different URL types
           if (sourceUrl.includes("spotify.com/episode") || sourceUrl.includes("podcasts.apple.com")) {
-            setProcessingStatus("🎧 Processing podcast episode...")
-            const analysis = await podcastProcessor.processEpisode(sourceUrl)
-            setProcessingStatus("✅ Podcast episode analyzed and stored!")
-            setAnalysisResult(analysis)
+            setProcessingStatus("🎧 Processing podcast episode...");
+            const analysis = await podcastProcessor.processEpisode(sourceUrl);
+            setProcessingStatus("✅ Podcast episode analyzed and stored!"); // Realtime will update list
+            setAnalysisResult(analysis);
           } else {
-            setProcessingStatus("🔍 Fetching content from URL...")
-            const analysis = await ContentProcessor.analyzeUrl(sourceUrl)
-            setProcessingStatus("✅ Analysis complete and stored in database!")
-            setAnalysisResult(analysis)
+            setProcessingStatus("🔍 Fetching content from URL...");
+            const analysis = await ContentProcessor.analyzeUrl(sourceUrl);
+            setProcessingStatus("✅ Analysis complete and stored in database!"); // Realtime will update list
+            setAnalysisResult(analysis);
           }
-
-          setTimeout(() => {
-            loadData()
-            setProcessingStatus("📚 Source added to library!")
-            setTimeout(() => setProcessingStatus(""), 3000)
-          }, 1000)
-
-          setSourceUrl("")
+          setSourceUrl("");
         } else {
-          // Handle subscriptions
+          // For subscriptions, actions will insert into DB, Realtime will trigger UI update (via loadData for now)
           switch (subscriptionType) {
             case "rss":
-              setProcessingStatus("🔍 Testing RSS feed...")
-              const rssResult = await rssProcessor.addFeed(sourceUrl, rssInterval)
+              setProcessingStatus("🔍 Testing RSS feed...");
+              const rssResult = await rssProcessor.addFeed(sourceUrl, rssInterval);
               if (rssResult.success) {
-                setProcessingStatus(`✅ RSS feed added: ${rssResult.feed?.title}`)
-                loadData()
-                setSourceUrl("")
+                setProcessingStatus(`✅ RSS feed added: ${rssResult.feed?.title}`);
+                setSourceUrl(""); // Realtime will call loadData
               } else {
-                setProcessingStatus(`❌ Failed to add RSS feed: ${rssResult.error}`)
+                setProcessingStatus(`❌ Failed to add RSS feed: ${rssResult.error}`);
               }
-              break
-
+              break;
             case "twitter":
-              setProcessingStatus("🐦 Adding Twitter account...")
-              const twitterResult = await twitterProcessor.addAccount(twitterHandle || sourceUrl)
+              setProcessingStatus("🐦 Adding Twitter account...");
+              const twitterResult = await twitterProcessor.addAccount(twitterHandle || sourceUrl);
               if (twitterResult.success) {
-                setProcessingStatus(`✅ Twitter account added: @${twitterResult.account?.handle}`)
-                loadData()
-                setTwitterHandle("")
-                setSourceUrl("")
+                setProcessingStatus(`✅ Twitter account added: @${twitterResult.account?.handle}`);
+                setTwitterHandle("");
+                setSourceUrl(""); // Realtime will call loadData
               } else {
-                setProcessingStatus(`❌ Failed to add Twitter account: ${twitterResult.error}`)
+                setProcessingStatus(`❌ Failed to add Twitter account: ${twitterResult.error}`);
               }
-              break
-
+              break;
             case "podcast":
-              setProcessingStatus("🎧 Adding podcast subscription...")
-              const podcastResult = await podcastProcessor.addSubscription(sourceUrl)
+              setProcessingStatus("🎧 Adding podcast subscription...");
+              const podcastResult = await podcastProcessor.addSubscription(sourceUrl);
               if (podcastResult.success) {
-                setProcessingStatus(`✅ Podcast subscription added: ${podcastResult.podcast?.title}`)
-                loadData()
-                setSourceUrl("")
+                setProcessingStatus(`✅ Podcast subscription added: ${podcastResult.podcast?.title}`);
+                setSourceUrl(""); // Realtime will call loadData
               } else {
-                setProcessingStatus(`❌ Failed to add podcast: ${podcastResult.error}`)
+                setProcessingStatus(`❌ Failed to add podcast: ${podcastResult.error}`);
               }
-              break
+              break;
           }
-          setTimeout(() => setProcessingStatus(""), 5000)
+          setTimeout(() => setProcessingStatus(""), 5000); // Clear status after a while for subscriptions
         }
       } catch (error) {
-        console.error("Error processing source:", error)
-        setProcessingStatus("❌ Error: Failed to process content. Please try again.")
-        setTimeout(() => setProcessingStatus(""), 5000)
+        console.error("Error processing source:", error);
+        setProcessingStatus("❌ Error: Failed to process content. Please try again.");
+        setTimeout(() => setProcessingStatus(""), 5000);
       } finally {
-        setIsProcessing(false)
+        setIsProcessing(false);
       }
     },
+    // Removed loadData from here; Realtime handles updates.
     [sourceUrl, sourceType, subscriptionType, rssInterval, twitterHandle, podcastType],
-  )
+  );
 
-  // Memoized handlers for performance
   const handleDeleteSource = useCallback(
     async (id: string, title: string) => {
-      if (!confirm(`Are you sure you want to remove "${title}"?`)) return
+      if (!confirm(`Are you sure you want to remove "${title}"?`)) return;
 
-      setIsDeleting(id)
+      setIsDeleting(id);
       try {
-        const success = ContentProcessor.deleteContent(id)
+        const success = await ContentProcessor.deleteContent(id);
         if (success) {
-          loadData()
-          setProcessingStatus(`✅ Removed "${title}"`)
-          setTimeout(() => setProcessingStatus(""), 3000)
+          await loadData();
+          setProcessingStatus(`✅ Removed "${title}"`);
         } else {
-          setProcessingStatus(`❌ Failed to remove "${title}"`)
-          setTimeout(() => setProcessingStatus(""), 3000)
+          setProcessingStatus(`❌ Failed to remove "${title}"`);
         }
       } catch (error) {
-        console.error("Error deleting source:", error)
-        setProcessingStatus(`❌ Error removing "${title}"`)
-        setTimeout(() => setProcessingStatus(""), 3000)
+        console.error("Error deleting source:", error);
+        setProcessingStatus(`❌ Error removing "${title}"`);
       } finally {
-        setIsDeleting(null)
+        setIsDeleting(null);
+        setTimeout(() => setProcessingStatus(""), 3000);
       }
     },
     [loadData],
-  )
+  );
 
   const handleToggleFeed = useCallback(
     async (feedId: string, type: "rss" | "twitter" | "podcast") => {
       try {
-        let isActive = false
+        let isActive = false;
         switch (type) {
           case "rss":
-            isActive = await rssProcessor.toggleFeed(feedId)
-            break
+            isActive = await rssProcessor.toggleFeed(feedId);
+            break;
           case "twitter":
-            isActive = await twitterProcessor.toggleAccount(feedId)
-            break
+            isActive = await twitterProcessor.toggleAccount(feedId);
+            break;
           case "podcast":
-            isActive = await podcastProcessor.toggleSubscription(feedId)
-            break
+            isActive = await podcastProcessor.toggleSubscription(feedId);
+            break;
         }
-        loadData()
-        setProcessingStatus(`✅ ${type.toUpperCase()} feed ${isActive ? "activated" : "paused"}`)
-        setTimeout(() => setProcessingStatus(""), 3000)
+        await loadData();
+        setProcessingStatus(`✅ ${type.toUpperCase()} feed ${isActive ? "activated" : "paused"}`);
       } catch (error) {
-        console.error("Error toggling feed:", error)
-        setProcessingStatus("❌ Error updating feed")
-        setTimeout(() => setProcessingStatus(""), 3000)
+        console.error("Error toggling feed:", error);
+        setProcessingStatus("❌ Error updating feed");
       }
+      setTimeout(() => setProcessingStatus(""), 3000);
     },
     [loadData],
-  )
+  );
 
-  // Memoized utility functions
   const getPriorityIcon = useMemo(
     () => (priority: string) => {
       switch (priority) {
-        case "deep-dive":
-          return <Zap className="h-4 w-4 text-purple-600" />
-        case "read":
-          return <BookOpen className="h-4 w-4 text-blue-600" />
-        case "skim":
-          return <Scan className="h-4 w-4 text-gray-500" />
-        default:
-          return <AlertCircle className="h-4 w-4 text-gray-400" />
+        case "deep-dive": return <Zap className="h-4 w-4 text-purple-600" />;
+        case "read": return <BookOpen className="h-4 w-4 text-blue-600" />;
+        case "skim": return <Scan className="h-4 w-4 text-gray-500" />;
+        default: return <AlertCircle className="h-4 w-4 text-gray-400" />;
       }
     },
     [],
-  )
+  );
 
   const getPriorityColor = useMemo(
     () => (priority: string) => {
       switch (priority) {
-        case "deep-dive":
-          return "bg-purple-100 text-purple-800 border-purple-200"
-        case "read":
-          return "bg-blue-100 text-blue-800 border-blue-200"
-        case "skim":
-          return "bg-gray-100 text-gray-800 border-gray-200"
-        default:
-          return "bg-gray-100 text-gray-600 border-gray-200"
+        case "deep-dive": return "bg-purple-100 text-purple-800 border-purple-200";
+        case "read": return "bg-blue-100 text-blue-800 border-blue-200";
+        case "skim": return "bg-gray-100 text-gray-800 border-gray-200";
+        default: return "bg-gray-100 text-gray-600 border-gray-200";
       }
     },
     [],
-  )
+  );
 
   const formatInterval = useCallback((minutes: number) => {
-    if (minutes < 60) return `${minutes}m`
-    const hours = Math.floor(minutes / 60)
-    const remainingMinutes = minutes % 60
-    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
-  }, [])
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  }, []);
+
+  if (isLoadingData && storedSources.length === 0 && rssFeeds.length === 0 && twitterFeeds.length === 0 && podcastFeeds.length === 0) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        <div className="bg-white rounded-lg border border-gray-200 p-6 md:p-8 mb-8">
+          <LoadingSkeleton height={30} width="60%" className="mb-6" />
+          <LoadingSkeleton count={2} height={40} className="mb-4" />
+          <LoadingSkeleton height={50} />
+        </div>
+        <div className="bg-white rounded-lg border border-gray-200 p-6 md:p-8">
+          <LoadingSkeleton height={30} width="40%" className="mb-6" />
+          <LoadingSkeleton count={3} height={60} className="mb-4" />
+        </div>
+      </div>
+    );
+  }
+
+  if (dataError) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-8 text-center">
+        <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+        <h2 className="text-xl font-semibold text-red-700 mb-2">Error Loading Sources</h2>
+        <p className="text-gray-600 mb-4">{dataError}</p>
+        <button
+          onClick={loadData}
+          className="bg-red-500 hover:bg-red-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
@@ -536,7 +612,7 @@ export default function SourceManagementView() {
       </div>
 
       {/* Status Bar */}
-      {(rssStatus.activeFeeds > 0 || twitterFeeds.length > 0 || podcastFeeds.length > 0) && (
+      {(!isLoadingData && !dataError && (rssStatus.activeFeeds > 0 || twitterFeeds.length > 0 || podcastFeeds.length > 0)) && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
           <div className="flex items-center gap-2 text-blue-800">
             <Activity className="h-4 w-4" />
@@ -585,7 +661,14 @@ export default function SourceManagementView() {
                 </h3>
               </div>
 
-              {storedSources.length === 0 ? (
+              {isLoadingData ? (
+                 <LoadingSkeleton count={3} height={70} className="mb-4" />
+              ) : dataError ? (
+                <div className="text-center py-12 text-red-600">
+                  <AlertCircle className="h-12 w-12 mx-auto mb-4" />
+                  <p>{dataError}</p>
+                </div>
+              ) : storedSources.length === 0 ? (
                 <div className="text-center py-12">
                   <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                   <h4 className="text-lg font-medium text-gray-900 mb-2">No sources analyzed yet</h4>
@@ -661,8 +744,11 @@ export default function SourceManagementView() {
               <div className="flex items-center justify-between">
                 <h3 className="text-lg md:text-xl font-semibold text-gray-900">RSS Feeds ({rssFeeds.length})</h3>
               </div>
-
-              {rssFeeds.length === 0 ? (
+              {isLoadingData ? (
+                 <LoadingSkeleton count={2} height={70} className="mb-4" />
+              ) : dataError ? (
+                 <div className="text-center py-12 text-red-600"><p>{dataError}</p></div>
+              ) : rssFeeds.length === 0 ? (
                 <div className="text-center py-12">
                   <Rss className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                   <h4 className="text-lg font-medium text-gray-900 mb-2">No RSS feeds added yet</h4>
@@ -764,8 +850,11 @@ export default function SourceManagementView() {
                   Twitter Accounts ({twitterFeeds.length})
                 </h3>
               </div>
-
-              {twitterFeeds.length === 0 ? (
+               {isLoadingData ? (
+                 <LoadingSkeleton count={2} height={70} className="mb-4" />
+              ) : dataError ? (
+                 <div className="text-center py-12 text-red-600"><p>{dataError}</p></div>
+              ) : twitterFeeds.length === 0 ? (
                 <div className="text-center py-12">
                   <Twitter className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                   <h4 className="text-lg font-medium text-gray-900 mb-2">No Twitter accounts added yet</h4>
@@ -852,8 +941,11 @@ export default function SourceManagementView() {
                   Podcast Subscriptions ({podcastFeeds.length})
                 </h3>
               </div>
-
-              {podcastFeeds.length === 0 ? (
+              {isLoadingData ? (
+                 <LoadingSkeleton count={2} height={70} className="mb-4" />
+              ) : dataError ? (
+                 <div className="text-center py-12 text-red-600"><p>{dataError}</p></div>
+              ) : podcastFeeds.length === 0 ? (
                 <div className="text-center py-12">
                   <Headphones className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                   <h4 className="text-lg font-medium text-gray-900 mb-2">No podcast subscriptions yet</h4>
@@ -942,3 +1034,4 @@ export default function SourceManagementView() {
     </div>
   )
 }
+>>>>>>> REPLACE

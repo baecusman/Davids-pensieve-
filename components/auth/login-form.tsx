@@ -1,176 +1,159 @@
 "use client"
 
 import type React from "react"
-
-import { useState, useEffect } from "react"
-import { User, Lock, UserPlus, LogIn } from "lucide-react"
-import { authManager } from "@/lib/auth/auth-manager"
+import { useState } from "react" // Removed useEffect as quick login is removed
+import { User, Lock, UserPlus, LogIn, Mail } from "lucide-react" // Added Mail icon
+import { useAuth } from "./auth-provider" // Import useAuth
 
 interface LoginFormProps {
-  onLogin: (user: any) => void
+  onLogin: (user: any) => void // User type will be Supabase user
 }
 
 export default function LoginForm({ onLogin }: LoginFormProps) {
-  const [username, setUsername] = useState("")
+  const [email, setEmail] = useState("") // Changed from username to email
+  const [password, setPassword] = useState("") // Added password state
   const [isCreatingUser, setIsCreatingUser] = useState(false)
   const [newUser, setNewUser] = useState({
-    username: "",
     email: "",
-    displayName: "",
+    password: "", // Added password for new user
+    confirmPassword: "", // Added confirm password
+    displayName: "", // Kept displayName, can be passed as metadata
   })
-  const [error, setError] = useState("")
-  const [loading, setLoading] = useState(false)
-  const [availableUsers, setAvailableUsers] = useState<any[]>([])
 
-  useEffect(() => {
-    // Load available users for quick selection
-    const users = authManager.getAllUsers()
-    setAvailableUsers(users)
-  }, [])
+  const auth = useAuth(); // Use the auth hook
+  // Error and loading state will come from auth.error and auth.isLoading
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!username.trim()) {
-      setError("Please enter a username")
+    if (!email.trim() || !password.trim()) {
+      // Use auth.setError or handle locally if preferred, for now local
+      auth.setError(new Error("Please enter email and password."))
       return
     }
-
-    setLoading(true)
-    setError("")
-
     try {
-      const result = authManager.login(username.trim())
-      if (result.success && result.user) {
-        onLogin(result.user)
-      } else {
-        setError(result.error || "Login failed")
+      const { data, error } = await auth.signIn({ email: email.trim(), password: password.trim() })
+      if (error) {
+        // Error is already set in auth context by signIn method
+        return;
       }
-    } catch (error) {
-      setError("Login failed. Please try again.")
-    } finally {
-      setLoading(false)
+      if (data.user) {
+        onLogin(data.user) // onLogin might not be needed if AuthProvider handles global state
+      }
+    } catch (err) {
+      // Error is already set in auth context by signIn method
+      console.error("Login submission error", err) // Additional local log
     }
   }
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newUser.username.trim() || !newUser.email.trim() || !newUser.displayName.trim()) {
-      setError("Please fill in all fields")
+    if (!newUser.email.trim() || !newUser.password.trim() || !newUser.displayName.trim()) {
+      auth.setError(new Error("Please fill in all fields for new user."))
+      return
+    }
+    if (newUser.password !== newUser.confirmPassword) {
+      auth.setError(new Error("Passwords do not match."))
       return
     }
 
-    setLoading(true)
-    setError("")
-
     try {
-      const result = authManager.createUser(newUser.username.trim(), newUser.email.trim(), newUser.displayName.trim())
-
-      if (result.success && result.user) {
-        // Auto-login the new user
-        const loginResult = authManager.login(result.user.username)
-        if (loginResult.success && loginResult.user) {
-          onLogin(loginResult.user)
+      // Pass displayName in options.data for user_metadata
+      const { data, error } = await auth.signUp({
+        email: newUser.email.trim(),
+        password: newUser.password.trim(),
+        options: {
+          data: {
+            display_name: newUser.displayName.trim(),
+            // username: newUser.username.trim(), // If you want to store username
+          }
         }
-      } else {
-        setError(result.error || "Failed to create user")
+      })
+
+      if (error) {
+         // Error is already set in auth context by signUp method
+        return;
       }
-    } catch (error) {
-      setError("Failed to create user. Please try again.")
-    } finally {
-      setLoading(false)
+      // For Supabase, signUp might send a confirmation email.
+      // The user is not typically logged in immediately.
+      // The onLogin prop might need rethinking here, or called only after email confirmation.
+      // For now, we'll assume onAuthStateChange in AuthProvider handles the user state.
+      // If immediate login is desired and configured in Supabase (e.g., auto-confirm for dev),
+      // onAuthStateChange should pick it up.
+      // onLogin(data.user) // This might be premature if email confirmation is needed.
+      setIsCreatingUser(false); // Switch back to login form
+      setEmail(newUser.email); // Pre-fill email for login
+      setPassword(""); // Clear password
+      auth.setError(null); // Clear previous errors
+      alert("Sign up successful! Please check your email to confirm your account if required, then log in.");
+
+    } catch (err) {
+      // Error is already set in auth context by signUp method
+      console.error("Create user submission error", err)
     }
   }
 
-  const handleQuickLogin = (user: any) => {
-    setUsername(user.username)
-    const result = authManager.login(user.username)
-    if (result.success && result.user) {
-      onLogin(result.user)
-    }
-  }
+  // Quick Login feature removed as it's not standard with Supabase email/password auth
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
-        {/* Header */}
         <div className="text-center mb-8">
           <div className="bg-blue-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
             <Lock className="h-8 w-8 text-white" />
           </div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Welcome to Pensive</h1>
-          <p className="text-gray-600">Sign in to access your personal knowledge base</p>
+          <p className="text-gray-600">
+            {isCreatingUser ? "Create your account" : "Sign in to access your personal knowledge base"}
+          </p>
         </div>
 
-        {error && <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg mb-6">{error}</div>}
+        {auth.error && <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg mb-6">{auth.error.message}</div>}
 
         {!isCreatingUser ? (
           <>
-            {/* Login Form */}
             <form onSubmit={handleLogin} className="space-y-6">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
                 <div className="relative">
-                  <User className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                  <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
                   <input
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    placeholder="Enter your username"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Enter your email"
                     className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    disabled={loading}
+                    disabled={auth.isLoading}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled={auth.isLoading}
                   />
                 </div>
               </div>
 
               <button
                 type="submit"
-                disabled={loading || !username.trim()}
+                disabled={auth.isLoading || !email.trim() || !password.trim()}
                 className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
               >
                 <LogIn className="h-5 w-5" />
-                {loading ? "Signing in..." : "Sign In"}
+                {auth.isLoading ? "Signing in..." : "Sign In"}
               </button>
             </form>
 
-            {/* Quick Login Options */}
-            {availableUsers.length > 0 && (
-              <div className="mt-8">
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-300" />
-                  </div>
-                  <div className="relative flex justify-center text-sm">
-                    <span className="px-2 bg-white text-gray-500">Quick Login</span>
-                  </div>
-                </div>
-
-                <div className="mt-6 grid grid-cols-1 gap-3">
-                  {availableUsers.slice(0, 3).map((user) => (
-                    <button
-                      key={user.id}
-                      onClick={() => handleQuickLogin(user)}
-                      className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-                      disabled={loading}
-                    >
-                      <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                        <span className="text-blue-600 font-medium text-sm">
-                          {user.displayName.charAt(0).toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="text-left">
-                        <div className="font-medium text-gray-900">{user.displayName}</div>
-                        <div className="text-sm text-gray-500">@{user.username}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Create User Link */}
             <div className="mt-8 text-center">
               <button
-                onClick={() => setIsCreatingUser(true)}
+                onClick={() => { setIsCreatingUser(true); auth.setError(null); }}
                 className="text-blue-600 hover:text-blue-700 font-medium flex items-center gap-2 mx-auto"
               >
                 <UserPlus className="h-4 w-4" />
@@ -180,73 +163,80 @@ export default function LoginForm({ onLogin }: LoginFormProps) {
           </>
         ) : (
           <>
-            {/* Create User Form */}
-            <form onSubmit={handleCreateUser} className="space-y-6">
+            <form onSubmit={handleCreateUser} className="space-y-4"> {/* Reduced space for more fields */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
                 <input
                   type="text"
-                  value={newUser.username}
-                  onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
-                  placeholder="Choose a username"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  disabled={loading}
+                  value={newUser.displayName}
+                  onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })}
+                  placeholder="Your full name or nickname"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={auth.isLoading}
                 />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
                 <input
                   type="email"
                   value={newUser.email}
                   onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
                   placeholder="Enter your email"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  disabled={loading}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={auth.isLoading}
                 />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Display Name</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
                 <input
-                  type="text"
-                  value={newUser.displayName}
-                  onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })}
-                  placeholder="Your full name"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  disabled={loading}
+                  type="password"
+                  value={newUser.password}
+                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                  placeholder="Choose a strong password"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={auth.isLoading}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+                <input
+                  type="password"
+                  value={newUser.confirmPassword}
+                  onChange={(e) => setNewUser({ ...newUser, confirmPassword: e.target.value })}
+                  placeholder="Confirm your password"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  disabled={auth.isLoading}
                 />
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => {
                     setIsCreatingUser(false)
-                    setError("")
-                    setNewUser({ username: "", email: "", displayName: "" })
+                    auth.setError(null) // Clear error from auth context
+                    setNewUser({ email: "", password: "", confirmPassword: "", displayName: "" })
                   }}
                   className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-3 px-4 rounded-lg transition-colors"
-                  disabled={loading}
+                  disabled={auth.isLoading}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={loading || !newUser.username.trim() || !newUser.email.trim() || !newUser.displayName.trim()}
+                  disabled={auth.isLoading || !newUser.email.trim() || !newUser.password.trim() || !newUser.displayName.trim()}
                   className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   <UserPlus className="h-5 w-5" />
-                  {loading ? "Creating..." : "Create User"}
+                  {auth.isLoading ? "Creating..." : "Create User"}
                 </button>
               </div>
             </form>
           </>
         )}
 
-        {/* Footer */}
         <div className="mt-8 text-center text-sm text-gray-500">
-          <p>Secure local authentication • No passwords required</p>
+          <p>Secure authentication with Supabase.</p>
         </div>
       </div>
     </div>

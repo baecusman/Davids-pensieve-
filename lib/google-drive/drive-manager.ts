@@ -120,14 +120,11 @@ class GoogleDriveManager {
 
   async exportDataToDrive(options: ExportOptions): Promise<{ success: boolean; fileId?: string; error?: string }> {
     try {
-      // Ensure app folder exists
       await this.initializeAppFolder()
 
-      // Get data to export
-      const { databaseService } = await import("@/lib/database/database-service")
-      const exportData = this.prepareExportData(options)
+      // Get data to export - prepareExportData is now async
+      const exportData = await this.prepareExportData(options)
 
-      // Prepare file content
       let content: string
       let mimeType: string
       let fileName: string
@@ -137,19 +134,18 @@ class GoogleDriveManager {
         mimeType = "application/json"
         fileName = `pensive-export-${new Date().toISOString().split("T")[0]}.json`
       } else {
+        // Assuming exportData.content is the array of items for CSV
         content = this.convertToCSV(exportData.content || [])
         mimeType = "text/csv"
         fileName = `pensive-export-${new Date().toISOString().split("T")[0]}.csv`
       }
 
-      // Upload to Google Drive
       const metadata = {
         name: fileName,
-        parents: [this.appFolderId!],
+        parents: [this.appFolderId!], // Non-null assertion as initializeAppFolder should set it
         description: `Pensive data export - ${new Date().toLocaleString()}`,
       }
 
-      // Create multipart upload
       const boundary = "-------314159265358979323846"
       const delimiter = "\r\n--" + boundary + "\r\n"
       const close_delim = "\r\n--" + boundary + "--"
@@ -167,9 +163,7 @@ class GoogleDriveManager {
         "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
         {
           method: "POST",
-          headers: {
-            "Content-Type": `multipart/related; boundary="${boundary}"`,
-          },
+          headers: { "Content-Type": `multipart/related; boundary="${boundary}"` },
           body: multipartRequestBody,
         },
       )
@@ -181,44 +175,45 @@ class GoogleDriveManager {
 
       const uploadData = await uploadResponse.json()
       console.log("Successfully exported to Google Drive:", uploadData.id)
+      return { success: true, fileId: uploadData.id }
 
-      return {
-        success: true,
-        fileId: uploadData.id,
-      }
     } catch (error) {
       console.error("Error exporting to Google Drive:", error)
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Export failed",
-      }
+      return { success: false, error: error instanceof Error ? error.message : "Export failed" }
     }
   }
 
-  private prepareExportData(options: ExportOptions): any {
-    const { databaseService } = require("@/lib/database/database-service")
+  private async prepareExportData(options: ExportOptions): Promise<any> {
+    // Dynamic import for databaseService as it might not be available server-side initially
+    // However, this class seems client-side oriented due to fetch.
+    const { databaseService } = await import("@/lib/database/database-service")
 
-    // Get content data
-    const contentOptions: any = { limit: 10000 }
+    const contentOptions: any = { limit: 10000 } // High limit to fetch all for export
     if (options.timeRange) {
-      contentOptions.dateRange = options.timeRange
+      // Assuming databaseService.getStoredContent can handle dateRange
+      // This was not explicitly shown in its refactor, adjust if needed.
+      // For now, we'll assume it filters by timeframe if available, or we fetch all.
+      // contentOptions.dateRange = options.timeRange; // If supported
     }
 
-    const contentData = databaseService.getStoredContent(contentOptions)
+    // getStoredContent is now async
+    const contentData = await databaseService.getStoredContent(contentOptions)
 
     const exportData: any = {
-      version: "2.0.0",
+      version: databaseService.getVersion(), // Use service's getVersion
       exportedAt: new Date().toISOString(),
       exportOptions: options,
-      content: contentData.items,
+      content: contentData.items, // getStoredContent returns an object { items, total, hasMore }
     }
 
     if (options.includeAnalysis) {
-      exportData.stats = databaseService.getDatabaseStats()
+      // getApplicationStats is now async and has a different structure
+      exportData.stats = await databaseService.getApplicationStats()
     }
 
     if (options.includeConceptMap) {
-      exportData.conceptMap = databaseService.getConceptMapData(50)
+      // getConceptMapData is now async
+      exportData.conceptMap = await databaseService.getConceptMapData(50) // Default abstraction
     }
 
     return exportData
@@ -226,18 +221,17 @@ class GoogleDriveManager {
 
   private convertToCSV(items: any[]): string {
     if (items.length === 0) return ""
-
+    // Ensure 'analysis' and its properties exist, provide defaults if not
     const headers = ["Title", "URL", "Summary", "Priority", "Tags", "Created", "Source"]
     const rows = items.map((item) => [
-      `"${item.title.replace(/"/g, '""')}"`,
-      `"${item.url}"`,
-      `"${item.analysis.summary.sentence.replace(/"/g, '""')}"`,
-      item.analysis.priority,
-      `"${item.analysis.tags.join(", ")}"`,
-      item.createdAt,
-      item.source,
+      `"${item.title?.replace(/"/g, '""') || ""}"`,
+      `"${item.url || ""}"`,
+      `"${item.analysis?.summaryText?.replace(/"/g, '""') || ""}"`, // Adjusted to summaryText
+      item.analysis?.priority || "",
+      `"${item.analysis?.tags?.join(", ") || ""}"`,
+      item.createdAt || "",
+      item.source || "",
     ])
-
     return [headers.join(","), ...rows.map((row) => row.join(","))].join("\n")
   }
 

@@ -1,12 +1,26 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server";
+import { z } from 'zod';
+
+// Define Zod schema for the request body
+const analyzeContentSchema = z.object({
+  content: z.string().min(1, "Content cannot be empty"),
+  title: z.string().min(1, "Title cannot be empty"),
+  url: z.string().url("Invalid URL format").optional(),
+});
 
 export async function POST(request: NextRequest) {
   try {
-    const { content, title, url } = await request.json()
+    const body = await request.json();
+    const validationResult = analyzeContentSchema.safeParse(body);
 
-    if (!content || !title) {
-      return NextResponse.json({ error: "Content and title are required" }, { status: 400 })
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: validationResult.error.flatten() },
+        { status: 400 }
+      );
     }
+    // Use validated data from here
+    const { content, title, url } = validationResult.data;
 
     // Check if XAI_API_KEY is available
     const apiKey = process.env.XAI_API_KEY
